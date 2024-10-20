@@ -1,3 +1,5 @@
+#!/usr/bin/env python3.12
+
 ################################################################
 ### Name: overleaf-sync.py
 ### Description: Overleaf Project Sync Tool
