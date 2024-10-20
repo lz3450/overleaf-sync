@@ -1,3 +1,12 @@
+################################################################
+### Name: overleaf-sync.py
+### Description: Overleaf Project Sync Tool
+### Author: KZL
+################################################################
+
+# TODO: Add logging
+# TODO: Pull deleted files
+
 import os
 import subprocess
 import argparse
@@ -6,6 +15,8 @@ import json
 from bs4 import BeautifulSoup
 import zipfile
 import websocket
+
+from time import sleep
 
 
 OVERLEAF_URL = "https://overleaf.s3lab.io"
@@ -17,7 +28,7 @@ CONFIG_FILE = os.path.join(SCRIPT_DIR, "config.json")
 ZIP_FILE = os.path.join(SCRIPT_DIR, "latex.zip")
 LATEX_PROJECT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
 LATEST_COMMIT_FILE = os.path.join(SCRIPT_DIR, "latest_commit.txt")
-REMOTE_VERSION_FILE = os.path.join(SCRIPT_DIR, "remote_version.json")
+REMOTE_VERSION_FILE = os.path.join(SCRIPT_DIR, "remote_version.txt")
 IDS_FILE = os.path.join(SCRIPT_DIR, "file_ids.json")
 
 
@@ -32,8 +43,10 @@ class OverleafProject:
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36 Edg/129.0.0.0",
             }
         )
-        self._root_folder_id = hex(int(self.project_id, 16) - 1)[2:].lower()
+        self._root_folder_id = None
         self._csrf_token = None
+        self._original_file_ids = None
+        self._indexed_file_ids = None
 
     @property
     def project_url(self) -> str:
@@ -53,7 +66,7 @@ class OverleafProject:
 
     @property
     def root_folder_id(self) -> str:
-        return self._root_folder_id
+        return self._root_folder_id if self._root_folder_id else hex(int(self.project_id, 16) - 1)[2:].lower()
 
     def login(self, username: str, password: str) -> None:
         print("Logging in to Overleaf...")
@@ -96,8 +109,10 @@ class OverleafProject:
             zip_ref.extractall(LATEX_PROJECT_DIR)
         print(f"Files unzipped to {LATEX_PROJECT_DIR}.")
 
-    def upload(self, file_path: str) -> None:
-        print(f"Uploading files from {LATEX_PROJECT_DIR} to Overleaf project {self.project_id}...")
+    def upload(self, file_path: str, dry_run=False) -> None:
+        print(f"Uploading {file_path}...")
+        if dry_run:
+            return
 
         relative_path = "null" if not os.path.dirname(file_path) else file_path
         file_name = os.path.basename(file_path)
@@ -116,8 +131,10 @@ class OverleafProject:
         qqfile.close()
         response.raise_for_status()
 
-    def folder(self, path: str) -> None:
-        print(f"Creating folder {path} in Overleaf project {self.project_id}...")
+    def folder(self, path: str, dry_run=False) -> None:
+        print(f"Creating folder {path}...")
+        if dry_run:
+            return
         parent_folder_id, type = self._find_id_type(os.path.dirname(path))
         assert type == "folder"
 
@@ -131,8 +148,16 @@ class OverleafProject:
         response = self.session.post(f"{self.project_url}/folder", headers=headers, data=data)
         response.raise_for_status()
 
-    def delete(self, id: str, type: str) -> None:
-        print(f"Deleting object {id} from Overleaf project {self.project_id}...")
+    def delete(self, path: str, dry_run=False) -> None:
+        id, type = self._find_id_type(path)
+        print(f"Deleting {type}: {path} {id}")
+
+        if type == "folder":
+            if input(f"Are you sure you want to delete folder {path}? (y/n): ").strip().lower() not in ["y", "yes"]:
+                print("Operation cancelled.")
+                return
+        if dry_run:
+            return
 
         headers = {
             "Accept": "application/json",
@@ -145,7 +170,11 @@ class OverleafProject:
         response = self.session.delete(f"{self.project_url}/{type}/{id}", headers=headers)
         response.raise_for_status()
 
-    def _get_file_ids(self) -> dict[str, dict[str, str]]:
+    @property
+    def original_file_ids(self) -> dict[str, dict]:
+        if self._original_file_ids:
+            return self._original_file_ids
+
         print(f"Fetching document IDs from Overleaf project {self.project_id}...")
         response = self.session.get(f"{OVERLEAF_URL}/socket.io/1/?projectId={self.project_id}")
         ws_id = response.text.split(":")[0]
@@ -158,15 +187,27 @@ class OverleafProject:
             if data.startswith("5:::"):
                 break
         ws.close()
-        root_folder_data: dict
-        root_folder_data = json.loads(data[4:])["args"][0]["project"]["rootFolder"][0]
-        assert self.root_folder_id == root_folder_data["_id"]
-        root_folder_id = root_folder_data["_id"]
+        ids: dict
+        ids = json.loads(data[4:])["args"][0]["project"]["rootFolder"][0]
+
+        with open(IDS_FILE, "w") as f:
+            json.dump(ids, f)
+
+        assert self.root_folder_id == ids["_id"]
+        self._root_folder_id = ids["_id"]
+
+        self._original_file_ids = ids
+        return self._original_file_ids
+
+    @property
+    def indexed_file_ids(self) -> dict[str, dict[str, str]]:
+        if self._indexed_file_ids:
+            return self._indexed_file_ids
 
         ids = {"folders": {}, "fileRefs": {}, "docs": {}}
 
         def _restructure(folder_data: dict, current_folder="") -> None:
-            if folder_data["_id"] != root_folder_id:
+            if folder_data["_id"] != self.root_folder_id:
                 current_folder = f'{current_folder}{folder_data["name"]}/'
             for folder in folder_data.get("folders", []):
                 ids["folders"][f'{current_folder}{folder["name"]}'] = folder["_id"]
@@ -176,14 +217,34 @@ class OverleafProject:
             for file_ref in folder_data.get("fileRefs", []):
                 ids["fileRefs"][f'{current_folder}{file_ref["name"]}'] = file_ref["_id"]
 
-        _restructure(root_folder_data)
+        _restructure(self.original_file_ids)
 
-        # with open(IDS_FILE, "w") as f:
-        #     json.dump(ids, f)
-        return ids
+        self._indexed_file_ids = ids
+        return self._indexed_file_ids
+
+    def _find_empty_folder(self) -> list[str]:
+        empty_folders = []
+
+        def traverse_folders(folder: dict):
+            if not folder.get("folders") and not folder.get("fileRefs") and not folder.get("docs"):
+                empty_folders.append(folder["name"])
+            else:
+                all_sub_folders_empty = True
+                for sub_folder in folder.get("folders", []):
+                    traverse_folders(sub_folder)
+                    if sub_folder["_id"] not in empty_folders:
+                        all_sub_folders_empty = False
+                if all_sub_folders_empty and not folder.get("fileRefs") and not folder.get("docs"):
+                    empty_folders.append(folder["name"])
+
+        # Start checking from the root level folders
+        for folder in self.original_file_ids.get("folders", []):
+            traverse_folders(folder)
+
+        return empty_folders
 
     def _find_id_type(self, path: str) -> tuple[str, str]:
-        ids = self._get_file_ids()
+        ids = self.indexed_file_ids
         if path in ids["fileRefs"]:
             return ids["fileRefs"][path], "file"
         elif path in ids["docs"]:
@@ -294,29 +355,70 @@ class OverleafProject:
             print(f"Writing latest commit ID to {LATEST_COMMIT_FILE}: {self.latest_commit_id}")
             f.write(self.latest_commit_id)
 
-    def push(self) -> None:
+    def push(self, force=False, dry_run=False) -> None:
         if not os.path.exists(os.path.join(LATEX_PROJECT_DIR, ".git")):
             raise RuntimeError(f"LaTeX project directory `{LATEX_PROJECT_DIR}` does not initialized.")
         if not self.is_local_clean:
             raise RuntimeError("Cannot push changes from a dirty repository.")
         if self.is_remote_updated:
             raise RuntimeError("Cannot push changes to a updated remote repository.")
+
+        if force:
+            print("Force pushing changes to Overleaf project...")
+            managed_files = subprocess.run(
+                ["git", "-C", LATEX_PROJECT_DIR, "ls-files"], capture_output=True, text=True, check=True
+            ).stdout.strip().split("\n")
+
+            if dry_run:
+                sleep_time = 0
+            else:
+                sleep_time = 9 if len(managed_files) >= 200 else 1
+            for file_path in managed_files:
+                self.upload(file_path, dry_run)
+                sleep(sleep_time)
+            return
+
+        delete_list: list[str] = []
+        upload_list: list[str] = []
         for line in self._get_changed_files().split("\n"):
             if not line:
                 continue
-            status, file_path = line.split("\t")
-            print(f"{status}\t{file_path}")
-            if status == "D":
-                file_id, type = self._find_id_type(file_path)
-                print(f"Deleting object {file_id} of type {type}")
-                self.delete(file_id, type)
-            else:
-                self.upload(file_path)
+            print("status:", line)
+            row = line.split("\t")
+            status = row[0]
+            match status:
+                case "D":
+                    assert len(row) == 2
+                    file_path = row[1]
+                    delete_list.append(file_path)
+                case "R100":
+                    assert len(row) == 3
+                    old_file_path = row[1]
+                    new_file_path = row[2]
+                    delete_list.append(old_file_path)
+                    upload_list.append(new_file_path)
+                case _:
+                    ValueError(f"Unsupported status: {status}")
+        for file_path in delete_list:
+            self.delete(file_path, dry_run)
+        for file_path in upload_list:
+            self.upload(file_path, dry_run)
+        for folder_path in self._find_empty_folder():
+            self.delete(folder_path, dry_run)
+
+        if not dry_run:
+            project.pull()
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(prog="overleaf-sync.py", description="Overleaf Project Sync Tool")
-    parser.add_argument("command", choices=["pull", "push", "sync", "dummy"], help="Command to execute")
+    parser.add_argument("-v", "--version", action="version", version="%(prog)s 1.0")
+    subparsers = parser.add_subparsers(dest="command", help="Command to execute")
+    pull_parser = subparsers.add_parser("pull", help="Pull changes from Overleaf project")
+    push_parser = subparsers.add_parser("push", help="Push changes to Overleaf project")
+    push_parser.add_argument("-f", "--force", action="store_true", help="Force push changes to Overleaf project")
+    push_parser.add_argument("-d", "--dry-run", action="store_true", help="Dry run mode")
+
     args = parser.parse_args()
 
     with open(CONFIG_FILE, "r") as config_file:
@@ -329,9 +431,6 @@ if __name__ == "__main__":
         case "pull":
             project.pull()
         case "push":
-            project.push()
-            project.pull()
-        case "sync":
-            pass
-        case "dummy":
-            pass
+            project.push(force=args.force, dry_run=args.dry_run)
+        case _:
+            parser.print_help()
