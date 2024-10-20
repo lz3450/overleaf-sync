@@ -106,8 +106,14 @@ class OverleafProject:
     def unzip(self) -> None:
         print(f"Unzipping file {ZIP_FILE} to directory {LATEX_PROJECT_DIR}...")
         with zipfile.ZipFile(ZIP_FILE, "r") as zip_ref:
+            # for file in zip_ref.filelist:
+            #     print(f"Extracting {file.filename}...")
+            #     zip_ref.extract(file, LATEX_PROJECT_DIR)
             zip_ref.extractall(LATEX_PROJECT_DIR)
-        print(f"Files unzipped to {LATEX_PROJECT_DIR}.")
+            for file in self.managed_files:
+                if file not in (zip_info.filename for zip_info in zip_ref.filelist):
+                    print(f"Deleting local {file}...")
+                    os.remove(os.path.join(LATEX_PROJECT_DIR, file))
 
     def upload(self, file_path: str, dry_run=False) -> None:
         print(f"Uploading {file_path}...")
@@ -223,27 +229,28 @@ class OverleafProject:
         return self._indexed_file_ids
 
     def _find_empty_folder(self) -> list[str]:
-        empty_folders = []
+        empty_folders: list[str] = []
 
-        def traverse_folders(folder: dict):
+        def traverse_folders(folder: dict, parent_folder="") -> None:
             if not folder.get("folders") and not folder.get("fileRefs") and not folder.get("docs"):
-                empty_folders.append(folder["name"])
+                empty_folders.append(f'{parent_folder}/{folder["name"]}')
             else:
                 all_sub_folders_empty = True
                 for sub_folder in folder.get("folders", []):
-                    traverse_folders(sub_folder)
+                    traverse_folders(sub_folder, f'{parent_folder}/{folder["name"]}')
                     if sub_folder["_id"] not in empty_folders:
                         all_sub_folders_empty = False
                 if all_sub_folders_empty and not folder.get("fileRefs") and not folder.get("docs"):
-                    empty_folders.append(folder["name"])
+                    empty_folders.append(f'{parent_folder}/{folder["name"]}')
 
         # Start checking from the root level folders
         for folder in self.original_file_ids.get("folders", []):
             traverse_folders(folder)
 
-        return empty_folders
+        return [p.lstrip("/") for p in empty_folders]
 
     def _find_id_type(self, path: str) -> tuple[str, str]:
+        print(f"Finding id for `{path}`...")
         ids = self.indexed_file_ids
         if path in ids["fileRefs"]:
             return ids["fileRefs"][path], "file"
@@ -313,6 +320,14 @@ class OverleafProject:
         assert remote_version >= recorded_remote_version
         return remote_version > recorded_remote_version
 
+    @property
+    def managed_files(self) -> list[str]:
+        return (
+            subprocess.run(["git", "-C", LATEX_PROJECT_DIR, "ls-files"], capture_output=True, text=True, check=True)
+            .stdout.strip()
+            .split("\n")
+        )
+
     def pull(self) -> None:
         if not os.path.exists(os.path.join(LATEX_PROJECT_DIR, ".git")):
             os.makedirs(LATEX_PROJECT_DIR, exist_ok=True)
@@ -365,15 +380,12 @@ class OverleafProject:
 
         if force:
             print("Force pushing changes to Overleaf project...")
-            managed_files = subprocess.run(
-                ["git", "-C", LATEX_PROJECT_DIR, "ls-files"], capture_output=True, text=True, check=True
-            ).stdout.strip().split("\n")
 
             if dry_run:
                 sleep_time = 0
             else:
-                sleep_time = 9 if len(managed_files) >= 200 else 1
-            for file_path in managed_files:
+                sleep_time = 9 if len(self.managed_files) >= 200 else 1
+            for file_path in self.managed_files:
                 self.upload(file_path, dry_run)
                 sleep(sleep_time)
             return
