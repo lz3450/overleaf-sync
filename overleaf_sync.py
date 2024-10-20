@@ -414,11 +414,16 @@ class OverleafProject:
             self.logger.info("status: %s", line)
             row = line.split("\t")
             status = row[0]
+            breakpoint()
             match status:
                 case "D":
                     assert len(row) == 2
                     file_path = row[1]
                     delete_list.append(file_path)
+                case "M":
+                    assert len(row) == 2
+                    file_path = row[1]
+                    upload_list.append(file_path)
                 case "R100":
                     assert len(row) == 3
                     old_file_path = row[1]
@@ -426,7 +431,7 @@ class OverleafProject:
                     delete_list.append(old_file_path)
                     upload_list.append(new_file_path)
                 case _:
-                    ValueError(f"Unsupported status: {status}")
+                    raise ValueError(f"Unsupported status: {status}")
         for file_path in delete_list:
             self.delete(file_path, dry_run)
         for file_path in upload_list:
