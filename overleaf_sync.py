@@ -4,11 +4,10 @@
 ### Author: KZL
 ################################################################
 
-# TODO: Add logging
-
 import os
 import subprocess
 import argparse
+import logging
 import requests
 import json
 from bs4 import BeautifulSoup
@@ -16,6 +15,7 @@ import zipfile
 import websocket
 
 from time import sleep
+from datetime import datetime
 
 
 OVERLEAF_URL = "https://overleaf.s3lab.io"
@@ -29,6 +29,7 @@ LATEX_PROJECT_DIR = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
 LATEST_COMMIT_FILE = os.path.join(SCRIPT_DIR, "latest_commit.txt")
 REMOTE_VERSION_FILE = os.path.join(SCRIPT_DIR, "remote_version.txt")
 IDS_FILE = os.path.join(SCRIPT_DIR, "file_ids.json")
+LOG_DIR = os.path.join(SCRIPT_DIR, "logs")
 
 
 class OverleafProject:
@@ -46,6 +47,20 @@ class OverleafProject:
         self._csrf_token = None
         self._original_file_ids = None
         self._indexed_file_ids = None
+
+        now = datetime.now().strftime("%Y%m%d_%H%M%S")
+        os.makedirs(LOG_DIR, exist_ok=True)
+        self.logger = logging.getLogger(f"{__name__}.{now}")
+        self.logger.setLevel(logging.DEBUG)
+        formatter = logging.Formatter("[%(asctime)s] [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+        fh = logging.FileHandler(os.path.join(LOG_DIR, f"{now}.log"))
+        fh.setLevel(logging.DEBUG)
+        fh.setFormatter(formatter)
+        self.logger.addHandler(fh)
+        ch = logging.StreamHandler()
+        ch.setLevel(logging.INFO)
+        ch.setFormatter(formatter)
+        self.logger.addHandler(ch)
 
     @property
     def project_url(self) -> str:
@@ -68,7 +83,7 @@ class OverleafProject:
         return self._root_folder_id if self._root_folder_id else hex(int(self.project_id, 16) - 1)[2:].lower()
 
     def login(self, username: str, password: str) -> None:
-        print("Logging in to Overleaf...")
+        self.logger.info("Logging in to Overleaf...")
         response = self.session.get(LOGIN_URL)
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
@@ -79,7 +94,7 @@ class OverleafProject:
         payload = {"email": username, "password": password, "_csrf": csrf_token}
         response = self.session.post(LOGIN_URL, data=payload)
         response.raise_for_status()
-        print("Login successful.")
+        self.logger.info("Login successful.")
 
     @property
     def csrf_token(self) -> str:
@@ -95,29 +110,29 @@ class OverleafProject:
         return self._csrf_token
 
     def download(self) -> None:
-        print(f"Downloading project ZIP from url: {self.download_url}...")
+        self.logger.info("Downloading project ZIP from url: %s...", self.download_url)
         response = self.session.get(self.download_url)
         response.raise_for_status()
         with open(ZIP_FILE, "wb") as f:
             f.write(response.content)
-        print(f"Project ZIP downloaded as {ZIP_FILE}")
+        self.logger.debug("Project ZIP downloaded as %s", ZIP_FILE)
 
     def unzip(self, keep=True) -> None:
-        print(f"Unzipping file {ZIP_FILE} to directory {LATEX_PROJECT_DIR}...")
+        self.logger.info("Unzipping file %s to directory %s...", ZIP_FILE, LATEX_PROJECT_DIR)
         with zipfile.ZipFile(ZIP_FILE, "r") as zip_ref:
             # for file in zip_ref.filelist:
-            #     print(f"Extracting {file.filename}...")
+            #     self.logger.info("Extracting %s...", file.filename)
             #     zip_ref.extract(file, LATEX_PROJECT_DIR)
             zip_ref.extractall(LATEX_PROJECT_DIR)
             if not keep:
                 return
             for file in self.managed_files:
                 if file not in (zip_info.filename for zip_info in zip_ref.filelist):
-                    print(f"Deleting local {file}...")
+                    self.logger.info("Deleting local %s...", file)
                     os.remove(os.path.join(LATEX_PROJECT_DIR, file))
 
     def upload(self, file_path: str, dry_run=False) -> None:
-        print(f"Uploading {file_path}...")
+        self.logger.info("Uploading %s...", file_path)
         if dry_run:
             return
 
@@ -139,7 +154,7 @@ class OverleafProject:
         response.raise_for_status()
 
     def folder(self, path: str, dry_run=False) -> None:
-        print(f"Creating folder {path}...")
+        self.logger.info("Creating folder %s...", path)
         if dry_run:
             return
         parent_folder_id, type = self._find_id_type(os.path.dirname(path))
@@ -157,11 +172,11 @@ class OverleafProject:
 
     def delete(self, path: str, dry_run=False) -> None:
         id, type = self._find_id_type(path)
-        print(f"Deleting {type}: {path} {id}")
+        self.logger.info("Deleting %s: %s %s", type, path, id)
 
         if type == "folder":
             if input(f"Are you sure you want to delete folder {path}? (y/n): ").strip().lower() not in ["y", "yes"]:
-                print("Operation cancelled.")
+                self.logger.info("Operation cancelled.")
                 return
         if dry_run:
             return
@@ -182,7 +197,7 @@ class OverleafProject:
         if self._original_file_ids:
             return self._original_file_ids
 
-        print(f"Fetching document IDs from Overleaf project {self.project_id}...")
+        self.logger.info("Fetching document IDs from Overleaf project %s...", self.project_id)
         response = self.session.get(f"{OVERLEAF_URL}/socket.io/1/?projectId={self.project_id}")
         ws_id = response.text.split(":")[0]
         ws = websocket.create_connection(
@@ -251,7 +266,7 @@ class OverleafProject:
         return [p.lstrip("/") for p in empty_folders]
 
     def _find_id_type(self, path: str) -> tuple[str, str]:
-        print(f"Finding id for `{path}`...")
+        self.logger.info("Finding id for `%s`...", path)
         ids = self.indexed_file_ids
         if path in ids["fileRefs"]:
             return ids["fileRefs"][path], "file"
@@ -275,7 +290,7 @@ class OverleafProject:
             raise RuntimeError(f"File {LATEST_COMMIT_FILE} does not exist.")
         with open(LATEST_COMMIT_FILE, "r") as f:
             latest_commit_id = f.read().strip()
-        print(f"Latest commit ID: {latest_commit_id}")
+        self.logger.info("Latest commit ID: %s", latest_commit_id)
 
         return subprocess.run(
             ["git", "-C", LATEX_PROJECT_DIR, "diff", "--name-status", latest_commit_id], capture_output=True, text=True
@@ -311,13 +326,13 @@ class OverleafProject:
     @property
     def is_remote_updated(self) -> bool:
         if not os.path.exists(REMOTE_VERSION_FILE):
-            print(f"File {REMOTE_VERSION_FILE} does not exist, treating as updated.")
+            self.logger.info("File %s does not exist, treating as updated.", REMOTE_VERSION_FILE)
             return False
         with open(REMOTE_VERSION_FILE, "r") as f:
             recorded_remote_version = json.load(f)
         remote_version = int(self._get_remote_version())
-        print(f"Recorded remote version: {recorded_remote_version}")
-        print(f"Remote version: {remote_version}")
+        self.logger.info("Recorded remote version: %s", recorded_remote_version)
+        self.logger.info("Remote version: %s", remote_version)
         assert remote_version >= recorded_remote_version
         return remote_version > recorded_remote_version
 
@@ -332,12 +347,12 @@ class OverleafProject:
     def pull(self, keep=True) -> None:
         if not os.path.exists(os.path.join(LATEX_PROJECT_DIR, ".git")):
             os.makedirs(LATEX_PROJECT_DIR, exist_ok=True)
-            print(f"Initializing git repository in {LATEX_PROJECT_DIR}...")
+            self.logger.info("Initializing git repository in %s...", LATEX_PROJECT_DIR)
             subprocess.run(["git", "init", LATEX_PROJECT_DIR], check=True)
-            print("Git repository initialized.")
+            self.logger.info("Git repository initialized.")
         else:
             if not self.is_remote_updated:
-                print("No updates available.")
+                self.logger.info("No updates available.")
                 return
             if not self.is_local_clean:
                 raise RuntimeError("Cannot pull changes to a dirty repository.")
@@ -368,7 +383,7 @@ class OverleafProject:
         with open(REMOTE_VERSION_FILE, "w") as f:
             f.write(str(remote_version))
         with open(LATEST_COMMIT_FILE, "w") as f:
-            print(f"Writing latest commit ID to {LATEST_COMMIT_FILE}: {self.latest_commit_id}")
+            self.logger.info("Writing latest commit ID to %s: %s", LATEST_COMMIT_FILE, self.latest_commit_id)
             f.write(self.latest_commit_id)
 
     def push(self, force=False, prune=False, dry_run=False) -> None:
@@ -380,7 +395,7 @@ class OverleafProject:
             raise RuntimeError("Cannot push changes to a updated remote repository.")
 
         if force:
-            print("Force pushing changes to Overleaf project...")
+            self.logger.info("Force pushing changes to Overleaf project...")
 
             if dry_run:
                 sleep_time = 0
@@ -396,7 +411,7 @@ class OverleafProject:
         for line in self._get_changed_files().split("\n"):
             if not line:
                 continue
-            print("status:", line)
+            self.logger.info("status: %s", line)
             row = line.split("\t")
             status = row[0]
             match status:
