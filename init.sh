@@ -13,6 +13,6 @@ if [[ -d "$OVERLEAF_PROJECT_PATH" ]]; then
 fi
 
 mkdir -p "$OVERLEAF_PROJECT_PATH"/.overleaf-sync
-ln -rsf overleaf_sync.py -t "$OVERLEAF_PROJECT_PATH"/.overleaf-sync/
+ln -rsf overleaf_sync.py "$OVERLEAF_PROJECT_PATH"/.overleaf-sync/overleaf_sync
 cp config.example.json "$OVERLEAF_PROJECT_PATH"/.overleaf-sync/config.json
 echo "*" > "$OVERLEAF_PROJECT_PATH"/.overleaf-sync/.gitignore
