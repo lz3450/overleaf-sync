@@ -416,7 +416,6 @@ class OverleafProject:
             self.logger.info("status: %s", line)
             row = line.split("\t")
             status = row[0]
-            breakpoint()
             match status:
                 case "D":
                     assert len(row) == 2
