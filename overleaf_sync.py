@@ -5,7 +5,6 @@
 ################################################################
 
 # TODO: Add logging
-# TODO: Pull deleted files
 
 import os
 import subprocess
@@ -103,13 +102,15 @@ class OverleafProject:
             f.write(response.content)
         print(f"Project ZIP downloaded as {ZIP_FILE}")
 
-    def unzip(self) -> None:
+    def unzip(self, keep=True) -> None:
         print(f"Unzipping file {ZIP_FILE} to directory {LATEX_PROJECT_DIR}...")
         with zipfile.ZipFile(ZIP_FILE, "r") as zip_ref:
             # for file in zip_ref.filelist:
             #     print(f"Extracting {file.filename}...")
             #     zip_ref.extract(file, LATEX_PROJECT_DIR)
             zip_ref.extractall(LATEX_PROJECT_DIR)
+            if not keep:
+                return
             for file in self.managed_files:
                 if file not in (zip_info.filename for zip_info in zip_ref.filelist):
                     print(f"Deleting local {file}...")
@@ -328,7 +329,7 @@ class OverleafProject:
             .split("\n")
         )
 
-    def pull(self) -> None:
+    def pull(self, keep=True) -> None:
         if not os.path.exists(os.path.join(LATEX_PROJECT_DIR, ".git")):
             os.makedirs(LATEX_PROJECT_DIR, exist_ok=True)
             print(f"Initializing git repository in {LATEX_PROJECT_DIR}...")
@@ -341,7 +342,7 @@ class OverleafProject:
             if not self.is_local_clean:
                 raise RuntimeError("Cannot pull changes to a dirty repository.")
         self.download()
-        self.unzip()
+        self.unzip(keep=keep)
         remote_version = self._get_remote_version()
         subprocess.run(["git", "-C", LATEX_PROJECT_DIR, "add", "."], check=True)
         if self.is_local_clean:
@@ -370,7 +371,7 @@ class OverleafProject:
             print(f"Writing latest commit ID to {LATEST_COMMIT_FILE}: {self.latest_commit_id}")
             f.write(self.latest_commit_id)
 
-    def push(self, force=False, dry_run=False) -> None:
+    def push(self, force=False, prune=False, dry_run=False) -> None:
         if not os.path.exists(os.path.join(LATEX_PROJECT_DIR, ".git")):
             raise RuntimeError(f"LaTeX project directory `{LATEX_PROJECT_DIR}` does not initialized.")
         if not self.is_local_clean:
@@ -415,8 +416,9 @@ class OverleafProject:
             self.delete(file_path, dry_run)
         for file_path in upload_list:
             self.upload(file_path, dry_run)
-        for folder_path in self._find_empty_folder():
-            self.delete(folder_path, dry_run)
+        if prune:
+            for folder_path in self._find_empty_folder():
+                self.delete(folder_path, dry_run)
 
         if not dry_run:
             project.pull()
@@ -427,8 +429,10 @@ if __name__ == "__main__":
     parser.add_argument("-v", "--version", action="version", version="%(prog)s 1.0")
     subparsers = parser.add_subparsers(dest="command", help="Command to execute")
     pull_parser = subparsers.add_parser("pull", help="Pull changes from Overleaf project")
+    pull_parser.add_argument("-k", "--keep", action="store_true", help="Keep remotely deleted files")
     push_parser = subparsers.add_parser("push", help="Push changes to Overleaf project")
     push_parser.add_argument("-f", "--force", action="store_true", help="Force push changes to Overleaf project")
+    push_parser.add_argument("-p", "--prune", action="store_true", help="Prune empty folders")
     push_parser.add_argument("-d", "--dry-run", action="store_true", help="Dry run mode")
 
     args = parser.parse_args()
@@ -441,8 +445,8 @@ if __name__ == "__main__":
 
     match args.command:
         case "pull":
-            project.pull()
+            project.pull(keep=args.keep)
         case "push":
-            project.push(force=args.force, dry_run=args.dry_run)
+            project.push(force=args.force, prune=args.prune, dry_run=args.dry_run)
         case _:
             parser.print_help()
