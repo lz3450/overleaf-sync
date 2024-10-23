@@ -85,7 +85,6 @@ class OverleafProject:
         self._csrf_token = None
         self._original_file_ids = None
         self._indexed_file_ids = None
-        self._project_updates = None
 
     @property
     def project_url(self) -> str:
@@ -307,8 +306,6 @@ class OverleafProject:
 
     @property
     def project_updates(self) -> str:
-        if self._project_updates:
-            return self._project_updates
         headers = {
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
         }
@@ -317,8 +314,7 @@ class OverleafProject:
         response.raise_for_status()
         with open(PROJECT_UPDATES_FILE, "w") as f:
             f.write(response.text)
-        self._project_updates = response.text
-        return self._project_updates
+        return response.text
 
     @property
     def remote_version(self) -> int:
