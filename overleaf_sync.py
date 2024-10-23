@@ -498,6 +498,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(prog="overleaf-sync.py", description="Overleaf Project Sync Tool")
     parser.add_argument("-v", "--version", action="version", version="%(prog)s 1.0")
+    parser.add_argument("-L", "--log", action="store_true", help="Log to file")
     subparsers = parser.add_subparsers(dest="command", help="Command to execute")
 
     init_parser = subparsers.add_parser("init", help="Initialize Overleaf project")
@@ -523,7 +524,8 @@ if __name__ == "__main__":
         LOGGER.error("Overleaf sync directory `%s` does not exist. Please run `init` command first.", WORKING_DIR_NAME)
         exit(ErrorNumber.EN_WKDIR_NOT_EXIST.value)
 
-    setup_file_logger(LOGGER)
+    if args.log:
+        setup_file_logger(LOGGER)
 
     try:
         with open(CONFIG_FILE, "r") as config_file:
