@@ -20,6 +20,7 @@ import websocket
 
 from time import sleep
 from datetime import datetime
+from enum import Enum
 
 
 OVERLEAF_URL = "https://overleaf.s3lab.io"
@@ -56,6 +57,14 @@ def setup_file_logger(logger: logging.Logger) -> None:
     fh.setLevel(logging.DEBUG)
     fh.setFormatter(LOGGER_FORMATTER)
     logger.addHandler(fh)
+
+
+class ErrorNumber(Enum):
+    EN_OK = 0
+    EN_WKDIR_NOT_EXIST = 1
+    EN_CONFIG_NOT_EXIST = 2
+    EN_PULL_ERROR = 3
+    EN_PUSH_ERROR = 4
 
 
 class OverleafProject:
@@ -101,7 +110,7 @@ class OverleafProject:
             self._root_folder_id = self.original_file_ids["_id"]
         return self._root_folder_id
 
-    def _login(self) -> None:
+    def login(self) -> None:
         if self._logged_in:
             return
         LOGGER.info("Logging in to Overleaf...")
@@ -303,6 +312,7 @@ class OverleafProject:
         headers = {
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
         }
+        LOGGER.debug("Fetching project updates from %s...", self.updates_url)
         response = self._session.get(self.updates_url, headers=headers)
         response.raise_for_status()
         with open(PROJECT_UPDATES_FILE, "w") as f:
@@ -375,17 +385,16 @@ class OverleafProject:
 
     def pull(self, keep=True) -> None:
         if not os.path.exists(os.path.join(LATEX_PROJECT_DIR, ".git")):
-            os.makedirs(LATEX_PROJECT_DIR, exist_ok=True)
             LOGGER.info("Initializing git repository in %s...", LATEX_PROJECT_DIR)
             subprocess.run(["git", "init", LATEX_PROJECT_DIR], check=True)
             LOGGER.info("Git repository initialized.")
-        else:
-            if not self.is_remote_updated:
-                LOGGER.info("No updates available.")
-                return
-            if not self.is_local_clean:
-                raise RuntimeError("Cannot pull changes to a dirty repository.")
-        self._login()
+        if not self.is_remote_updated:
+            LOGGER.info("No updates available.")
+            return
+        if not self.is_local_clean:
+            LOGGER.error("Cannot pull changes to a dirty repository.")
+            exit(ErrorNumber.EN_PULL_ERROR.value)
+
         self._download()
         self._unzip(keep=keep)
         remote_version = self.remote_version
@@ -418,13 +427,15 @@ class OverleafProject:
 
     def push(self, force=False, prune=False, dry_run=False) -> None:
         if not os.path.exists(os.path.join(LATEX_PROJECT_DIR, ".git")):
-            raise RuntimeError(f"LaTeX project directory `{LATEX_PROJECT_DIR}` does not initialized.")
+            LOGGER.error("LaTeX project directory `%s` does not initialized.", LATEX_PROJECT_DIR)
+            exit(ErrorNumber.EN_PUSH_ERROR.value)
         if not self.is_local_clean:
-            raise RuntimeError("Cannot push changes from a dirty repository.")
+            LOGGER.error("Cannot push changes from a dirty repository.")
+            exit(ErrorNumber.EN_PUSH_ERROR.value)
         if self.is_remote_updated:
-            raise RuntimeError("Cannot push changes to a updated remote repository.")
+            LOGGER.error("Cannot push changes to a updated remote repository.")
+            exit(ErrorNumber.EN_PUSH_ERROR.value)
 
-        self._login()
         if force:
             LOGGER.info("Force pushing changes to Overleaf project...")
 
@@ -510,22 +521,23 @@ if __name__ == "__main__":
 
     if args.command == "init":
         OverleafProject.init(args.username, args.password, args.project_id)
-        exit(0)
-
-    setup_file_logger(LOGGER)
+        exit(ErrorNumber.EN_OK.value)
 
     if not os.path.exists(WORKING_DIR):
         LOGGER.error("Overleaf sync directory `%s` does not exist. Please run `init` command first.", WORKING_DIR_NAME)
-        exit(1)
+        exit(ErrorNumber.EN_WKDIR_NOT_EXIST.value)
+
+    setup_file_logger(LOGGER)
 
     try:
         with open(CONFIG_FILE, "r") as config_file:
             config = json.load(config_file)
     except FileNotFoundError:
         LOGGER.error("Configuration file %s does not exist. Overleaf sync directory is corrupted.", CONFIG_FILE)
-        exit(2)
+        exit(ErrorNumber.EN_CONFIG_NOT_EXIST.value)
 
     project = OverleafProject(config["username"], config["password"], config["project_id"])
+    project.login()
 
     match args.command:
         case "pull":
@@ -534,4 +546,3 @@ if __name__ == "__main__":
             project.push(force=args.force, prune=args.prune, dry_run=args.dry_run)
         case _:
             parser.print_help()
-            exit(3)
