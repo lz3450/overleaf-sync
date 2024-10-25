@@ -36,22 +36,24 @@ PROJECT_UPDATES_FILE = os.path.join(WORKING_DIR, "updates.json")
 LATEST_COMMIT_FILE = os.path.join(WORKING_DIR, "latest_commit.txt")
 REMOTE_VERSION_FILE = os.path.join(WORKING_DIR, "remote_version.txt")
 IDS_FILE = os.path.join(WORKING_DIR, "file_ids.json")
-LOG_DIR = os.path.join(WORKING_DIR, "logs")
+LOG_DIR = ".overleaf-sync-logs"
 
 LOGGER = logging.getLogger(__name__)
 LOGGER_FORMATTER = logging.Formatter("[%(asctime)s] [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
 
 
-def setup_logger(logger: logging.Logger) -> None:
+def setup_logger(logger: logging.Logger, debug: bool) -> None:
     logger.setLevel(logging.DEBUG)
     ch = logging.StreamHandler()
-    ch.setLevel(logging.INFO)
+    ch.setLevel(logging.DEBUG if debug else logging.INFO)
     ch.setFormatter(LOGGER_FORMATTER)
     logger.addHandler(ch)
 
 
 def setup_file_logger(logger: logging.Logger) -> None:
     os.makedirs(LOG_DIR, exist_ok=True)
+    with open(os.path.join(LOG_DIR, ".gitignore"), "w") as f:
+        f.write("*")
     now = datetime.now().strftime("%Y%m%d_%H%M%S")
     fh = logging.FileHandler(os.path.join(LOG_DIR, f"{now}.log"))
     fh.setLevel(logging.DEBUG)
@@ -494,11 +496,10 @@ class OverleafProject:
 
 
 if __name__ == "__main__":
-    setup_logger(LOGGER)
-
     parser = argparse.ArgumentParser(prog="overleaf-sync.py", description="Overleaf Project Sync Tool")
     parser.add_argument("-v", "--version", action="version", version="%(prog)s 1.0")
     parser.add_argument("-L", "--log", action="store_true", help="Log to file")
+    parser.add_argument("-D", "--debug", action="store_true", help="Debug mode")
     subparsers = parser.add_subparsers(dest="command", help="Command to execute")
 
     init_parser = subparsers.add_parser("init", help="Initialize Overleaf project")
@@ -516,6 +517,10 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    setup_logger(LOGGER, args.debug)
+    if args.log:
+        setup_file_logger(LOGGER)
+
     if args.command == "init":
         OverleafProject.init(args.username, args.password, args.project_id)
         exit(ErrorNumber.EN_OK.value)
@@ -523,9 +528,6 @@ if __name__ == "__main__":
     if not os.path.exists(WORKING_DIR):
         LOGGER.error("Overleaf sync directory `%s` does not exist. Please run `init` command first.", WORKING_DIR_NAME)
         exit(ErrorNumber.EN_WKDIR_NOT_EXIST.value)
-
-    if args.log:
-        setup_file_logger(LOGGER)
 
     try:
         with open(CONFIG_FILE, "r") as config_file:
