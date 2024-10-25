@@ -180,18 +180,18 @@ class OverleafProject:
         LOGGER.debug("Project ZIP downloaded as %s", ZIP_FILE)
         return time()
 
-    def unzip(self, file_list: list | None = None, keep=True) -> None:
+    def _unzip(self, file_list: list | None = None, keep=True) -> None:
         """
         Unzip the downloaded ZIP file to the LaTeX project directory.
         `file_list`: List of files to extract. If `None`, extract all files.
         `keep`: Keep remotely deleted files.
         """
-        LOGGER.info("Unzipping file %s to directory %s...", ZIP_FILE, LATEX_PROJECT_DIR)
+        LOGGER.debug("Unzipping file %s to directory %s...", ZIP_FILE, LATEX_PROJECT_DIR)
         with zipfile.ZipFile(ZIP_FILE, "r") as zip_ref:
             # TODO: not tested
             if file_list:
                 for file in zip_ref.filelist:
-                    LOGGER.info("Extracting %s...", file.filename)
+                    LOGGER.debug("Extracting %s...", file.filename)
                     zip_ref.extract(file, LATEX_PROJECT_DIR)
             else:
                 zip_ref.extractall(LATEX_PROJECT_DIR)
@@ -199,7 +199,7 @@ class OverleafProject:
                 return
             for file in self.managed_files:
                 if file and file not in (zip_info.filename for zip_info in zip_ref.filelist):
-                    LOGGER.info("Deleting local %s...", file)
+                    LOGGER.debug("Deleting local %s...", file)
                     os.remove(os.path.join(LATEX_PROJECT_DIR, file))
 
     def _upload(self, file_path: str, dry_run=False) -> None:
