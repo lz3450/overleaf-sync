@@ -86,11 +86,12 @@ def _sleep_until(ts: float) -> None:
 
 class ErrorNumber(Enum):
     EN_OK = 0
-    EN_WKDIR_NOT_EXIST = 1
-    EN_CONFIG_NOT_EXIST = 2
-    EN_PULL_ERROR = 3
-    EN_PUSH_ERROR = 4
-    EN_NOT_INITIALIZED = 5
+    EN_NOT_INITIALIZED_ERROR = 1
+    EN_WKDIR_CORRUPTED_ERROR = 2
+    EN_GIT_DIR_CORRUPTED_ERROR = 3
+    EN_PULL_ERROR = 4
+    EN_PUSH_ERROR = 5
+    EN_HTTP_ERROR = 6
 
 
 class OverleafProject:
@@ -419,11 +420,24 @@ class OverleafProject:
             .split("\n")
         )
 
-    def pull(self, keep=True) -> None:
+    @staticmethod
+    def sanity_check() -> None:
+        if not os.path.exists(WORKING_DIR):
+            LOGGER.error(
+                "Overleaf sync directory `%s` does not exist. Please run `init` command first.", WORKING_DIR_NAME
+            )
+            exit(ErrorNumber.EN_NOT_INITIALIZED_ERROR.value)
+        if not os.path.exists(CONFIG_FILE):
+            LOGGER.error("Configuration file `%s` does not exist. Please reinitialize the project.", CONFIG_FILE)
+            exit(ErrorNumber.EN_WKDIR_CORRUPTED_ERROR.value)
         if not os.path.exists(os.path.join(LATEX_PROJECT_DIR, ".git")):
-            LOGGER.info("Initializing git repository in %s...", LATEX_PROJECT_DIR)
-            subprocess.run(["git", "init", LATEX_PROJECT_DIR], check=True)
-            LOGGER.info("Git repository initialized.")
+            LOGGER.error(
+                "Git is not initialized for LaTeX project in directory `%s`. Please reinitialize the project.",
+                LATEX_PROJECT_DIR,
+            )
+            exit(ErrorNumber.EN_GIT_DIR_CORRUPTED_ERROR.value)
+
+    def pull(self, keep=True) -> None:
         if not self.is_remote_updated:
             LOGGER.info("No updates available.")
             return
@@ -620,9 +634,7 @@ if __name__ == "__main__":
         OverleafProject.init(args.username, args.password, args.project_id, args.revision)
         exit(ErrorNumber.EN_OK.value)
 
-    if not os.path.exists(WORKING_DIR):
-        LOGGER.error("Overleaf sync directory `%s` does not exist. Please run `init` command first.", WORKING_DIR_NAME)
-        exit(ErrorNumber.EN_WKDIR_NOT_EXIST.value)
+    OverleafProject.sanity_check()
 
     try:
         with open(CONFIG_FILE, "r") as config_file:
