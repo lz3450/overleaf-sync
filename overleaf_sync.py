@@ -534,7 +534,11 @@ class OverleafProject:
         if not dry_run:
             project.pull()
 
-    def _migrate_revision(self, revision: dict, git_msg: str | None = None) -> float:
+    def _migrate_revision(self, revision: dict, merge_old=False) -> float:
+        """
+        Migrate the revision to the git repository.
+        `old`: Whether to merge all old revisions.
+        """
         toV = revision["toV"]
         LOGGER.info("Migrating revision %d...", toV)
         try:
@@ -552,7 +556,7 @@ class OverleafProject:
             f"--date=@{revision["meta"]["end_ts"] // 1000}",
             f"--author={name} <{email}>",
             "-m",
-            git_msg if git_msg else str(toV),
+            f"{revision['fromV'] if merge_old else "old"}->{toV}",
         )
         LOGGER.info("Version %s migrated.", toV)
         return ts
@@ -584,7 +588,7 @@ class OverleafProject:
         history: list[dict] = json.loads(self.history)["updates"][: last_revision + 1 if last_revision > 0 else None]
 
         LOGGER.info("Migrating all old revisions...")
-        self._migrate_revision(history[-1], "old")
+        self._migrate_revision(history[-1], merge_old=True)
         for i, revision in enumerate(reversed(history[:-1])):
             LOGGER.info("%d revision(s) to be migrated.", len(history) - i - 1)
             ts = self._migrate_revision(revision)
