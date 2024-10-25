@@ -18,7 +18,7 @@ from bs4 import BeautifulSoup
 import zipfile
 import websocket
 
-from time import sleep
+from time import sleep, time
 from datetime import datetime
 from enum import Enum
 
@@ -161,14 +161,19 @@ class OverleafProject:
         self._csrf_token = _csrf_token
         return self._csrf_token
 
-    def download(self, version: int | None = None) -> None:
-        url = f"{self.project_url}/version/{version}/zip" if version else self.download_url
-        LOGGER.info("Downloading project ZIP from url: %s...", url)
+    def _download(self, revision: int | None = None) -> float:
+        """
+        Download the project (revision) ZIP file from Overleaf.
+        There is a rate limit of 30 request per hour when downloading revision ZIP.
+        """
+        url = f"{self.project_url}/version/{revision}/zip" if revision else self.download_url
+        LOGGER.debug("Downloading project ZIP from url: %s...", url)
         response = self._session.get(url)
         response.raise_for_status()
         with open(ZIP_FILE, "wb") as f:
             f.write(response.content)
         LOGGER.debug("Project ZIP downloaded as %s", ZIP_FILE)
+        return time()
 
     def unzip(self, file_list: list | None = None, keep=True) -> None:
         """
