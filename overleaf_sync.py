@@ -29,19 +29,23 @@ PROJECTS_URL = f"{OVERLEAF_URL}/project"
 
 WORKING_DIR_NAME = ".overleaf-sync"
 WORKING_DIR = os.path.join(os.getcwd(), WORKING_DIR_NAME)
+LATEX_PROJECT_DIR = os.path.abspath(os.path.join(WORKING_DIR, ".."))
 CONFIG_FILE = os.path.join(WORKING_DIR, "config.json")
 ZIP_FILE = os.path.join(WORKING_DIR, "latex.zip")
-LATEX_PROJECT_DIR = os.path.abspath(os.path.join(WORKING_DIR, ".."))
 PROJECT_UPDATES_FILE = os.path.join(WORKING_DIR, "updates.json")
+IDS_FILE = os.path.join(WORKING_DIR, "file_ids.json")
+GIT_MAPPING_FILE = os.path.join(WORKING_DIR, "git_mapping.json")
 LATEST_COMMIT_FILE = os.path.join(WORKING_DIR, "latest_commit.txt")
 REMOTE_VERSION_FILE = os.path.join(WORKING_DIR, "remote_version.txt")
-IDS_FILE = os.path.join(WORKING_DIR, "file_ids.json")
-LOG_DIR = ".overleaf-sync-logs"
+
+OVERLEAF_BRANCH = "overleaf"
+LOCAL_BRANCH = "local"
 
 LOGGER = logging.getLogger(__name__)
 LOGGER_FORMATTER = logging.Formatter("[%(asctime)s] [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+LOG_DIR = ".overleaf-sync-logs"
 
-REQUEST_INTERVAL = 9
+REQUEST_INTERVAL = 10
 
 
 def setup_logger(logger: logging.Logger, debug: bool) -> None:
@@ -516,8 +520,32 @@ class OverleafProject:
         if not dry_run:
             project.pull()
 
+    def _migrate_revision(self, revision: dict, git_msg: str | None = None) -> float:
+        toV = revision["toV"]
+        LOGGER.info("Migrating revision %d...", toV)
+        try:
+            ts = self._download(toV)
+        except requests.HTTPError as e:
+            LOGGER.error("Failed to download revision %s: %s", revision, e)
+            LOGGER.error("Please remove the working directory and try again later. Exiting...")
+            exit(ErrorNumber.EN_HTTP_ERROR.value)
+        self._unzip()
+        name = ";".join(f"{user["last_name"]}, {user["first_name"]}" for user in revision["meta"]["users"])
+        email = ";".join(user["email"] for user in revision["meta"]["users"])
+        _git("add", ".")
+        _git(
+            "commit",
+            f"--date=@{revision["meta"]["end_ts"] // 1000}",
+            f"--author={name} <{email}>",
+            "-m",
+            git_msg if git_msg else str(toV),
+        )
+        LOGGER.info("Version %s migrated.", toV)
+        return ts
+
     @classmethod
-    def init(cls, user: str, password: str, project_id: str) -> None:
+    def init(cls, user: str, password: str, project_id: str, last_revision: int) -> None:
+        LOGGER.info("Initializing Overleaf project...")
         # Create working directory
         os.makedirs(WORKING_DIR, exist_ok=True)
         # Check if working directory exists
@@ -531,48 +559,28 @@ class OverleafProject:
         with open(os.path.join(WORKING_DIR, ".gitignore"), "w") as f:
             f.write("*")
 
-        #
-        project = cls(user, password, project_id)
-        project.login()
+        self = cls(user, password, project_id)
+        self.login()
 
         LOGGER.info("Initializing git repository in %s...", LATEX_PROJECT_DIR)
-        cmd = ["git", "-C", LATEX_PROJECT_DIR, "init"]
-        LOGGER.debug("Running command: %s", " ".join(cmd))
-        subprocess.run(cmd, check=True)
+        _git("init", "-b", OVERLEAF_BRANCH)
         LOGGER.info("Git repository initialized.")
 
         # Migrate to git
-        history: list[dict] = json.loads(project.history)["updates"]
+        history: list[dict] = json.loads(self.history)["updates"][: last_revision + 1 if last_revision > 0 else None]
 
-        for version in reversed(history):
-            toV = version["toV"]
-            LOGGER.debug("Migrate version: %s", toV)
-            project.download(version=toV)
-            sleep(9)
-            project.unzip()
-            date = f"@{version["meta"]["end_ts"] // 1000}"
-            names: list[str] = []
-            emails: list[str] = []
-            for u in version["meta"]["users"]:
-                u: dict[str, str]
-                names.append(f"{u["last_name"]}, {u["first_name"]}")
-                emails.append(u["email"])
-            cmd = ["git", "-C", LATEX_PROJECT_DIR, "add", "."]
-            LOGGER.debug("Running command: %s", " ".join(cmd))
-            subprocess.run(cmd, check=True)
-            cmd = [
-                "git",
-                "-C",
-                LATEX_PROJECT_DIR,
-                "commit",
-                f"--date={date}",
-                f"--author={";".join(names)} <{';'.join(emails)}>",
-                "-m",
-                f"Overleaf version: {toV}",
-            ]
-            LOGGER.debug("Running command: %s", " ".join(cmd))
-            subprocess.run(cmd, check=True)
-            LOGGER.info("Version %s migrated.", toV)
+        LOGGER.info("Migrating all old revisions...")
+        self._migrate_revision(history[-1], "old")
+        for i, revision in enumerate(reversed(history[:-1])):
+            LOGGER.info("%d revision(s) to be migrated.", len(history) - i - 1)
+            ts = self._migrate_revision(revision)
+            if len(history) >= 30:
+                _sleep_until(ts + 120)
+        _git("checkout", "-b", LOCAL_BRANCH)
+
+        # Record the mapping of synced remote version and local commit ID
+        with open(GIT_MAPPING_FILE, "w") as f:
+            f.write(f"{history[0]["toV"]}:{self.latest_commit_id}")
 
 
 if __name__ == "__main__":
@@ -586,6 +594,13 @@ if __name__ == "__main__":
     init_parser.add_argument("-u", "--username", required=True, help="Overleaf username")
     init_parser.add_argument("-p", "--password", required=True, help="Overleaf password")
     init_parser.add_argument("-i", "--project-id", required=True, help="Overleaf project ID")
+    init_parser.add_argument(
+        "-r",
+        "--revision",
+        type=int,
+        default=3,
+        help="Fetch the most recent N revisions, when N > 30, it will sleep for 2 minutes after each download. N<=0 means all revisions.",
+    )
 
     pull_parser = subparsers.add_parser("pull", help="Pull changes from Overleaf project")
     pull_parser.add_argument("-k", "--keep", action="store_true", help="Keep remotely deleted files")
@@ -602,7 +617,7 @@ if __name__ == "__main__":
         setup_file_logger(LOGGER)
 
     if args.command == "init":
-        OverleafProject.init(args.username, args.password, args.project_id)
+        OverleafProject.init(args.username, args.password, args.project_id, args.revision)
         exit(ErrorNumber.EN_OK.value)
 
     if not os.path.exists(WORKING_DIR):
