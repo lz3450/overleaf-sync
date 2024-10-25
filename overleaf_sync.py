@@ -63,6 +63,23 @@ def setup_file_logger(logger: logging.Logger) -> None:
     logger.addHandler(fh)
 
 
+def _git(*args: str) -> str:
+    cmd = ["git", "-C", LATEX_PROJECT_DIR, *args]
+    LOGGER.debug("Git command: %s", " ".join(cmd))
+    output = subprocess.run(cmd, capture_output=True, text=True, check=True).stdout.strip()
+    LOGGER.debug("Git output: \n%s", output)
+    return output
+
+
+def _sleep_until(ts: float) -> None:
+    now = time()
+    time_to_sleep = ts - now
+    LOGGER.debug("Sleeping for %.3f seconds...", time_to_sleep)
+
+    if time_to_sleep > 0:
+        sleep(time_to_sleep)
+
+
 class ErrorNumber(Enum):
     EN_OK = 0
     EN_WKDIR_NOT_EXIST = 1
