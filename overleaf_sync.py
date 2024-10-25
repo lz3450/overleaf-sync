@@ -95,10 +95,58 @@ class ErrorNumber(Enum):
 
 
 class OverleafProject:
-    def __init__(self, username: str, password: str, project_id: str) -> None:
-        self.username = username
-        self.password = password
-        self._project_id = project_id
+    def __init__(
+        self,
+        init: bool = False,
+        username: str | None = None,
+        password: str | None = None,
+        project_id: str | None = None,
+        n_revisions: int = 3,
+    ) -> None:
+        # Initialization
+        if init:
+            if not all([username, password, project_id]):
+                LOGGER.error("Missing required arguments for initialization.")
+                exit(ErrorNumber.EN_NOT_INITIALIZED_ERROR.value)
+            LOGGER.info("Initializing Overleaf project...")
+            # Create working directory
+            os.makedirs(WORKING_DIR, exist_ok=True)
+            # Check if working directory exists
+            if os.path.exists(CONFIG_FILE):
+                LOGGER.warning("Configuration file `%s` already exists. Overwriting...", CONFIG_FILE)
+            # Write `config.json`
+            with open(CONFIG_FILE, "w") as f:
+                json.dump({"username": username, "password": password, "project_id": project_id}, f)
+            LOGGER.info("Configuration file saved to %s", CONFIG_FILE)
+            # Write `.gitignore`
+            with open(os.path.join(WORKING_DIR, ".gitignore"), "w") as f:
+                f.write("*")
+            # Initialize git repository
+            LOGGER.info("Initializing git repository in %s...", LATEX_PROJECT_DIR)
+            _git("init", "-b", OVERLEAF_BRANCH)
+            LOGGER.info("Git repository initialized.")
+
+        # Sanity checks
+        if not os.path.exists(WORKING_DIR):
+            LOGGER.error(
+                "Overleaf sync directory `%s` does not exist. Please run `init` command first.", WORKING_DIR_NAME
+            )
+            exit(ErrorNumber.EN_NOT_INITIALIZED_ERROR.value)
+        if not os.path.exists(CONFIG_FILE):
+            LOGGER.error("Configuration file `%s` does not exist. Please reinitialize the project.", CONFIG_FILE)
+            exit(ErrorNumber.EN_WKDIR_CORRUPTED_ERROR.value)
+        if not os.path.exists(os.path.join(LATEX_PROJECT_DIR, ".git")):
+            LOGGER.error(
+                "Git is not initialized for LaTeX project in directory `%s`. Please reinitialize the project.",
+                LATEX_PROJECT_DIR,
+            )
+            exit(ErrorNumber.EN_GIT_DIR_CORRUPTED_ERROR.value)
+
+        with open(CONFIG_FILE, "r") as config_file:
+            config: dict[str, str] = json.load(config_file)
+        self.username = config["username"]
+        self.password = config["password"]
+        self.project_id = config["project_id"]
         self._session = requests.Session()
         self._session.headers.update(
             {
@@ -108,6 +156,13 @@ class OverleafProject:
             }
         )
         self._logged_in = False
+        self._login()
+
+        # Continue initialization
+        if init:
+            self._git_repo_init(n_revisions)
+            exit(ErrorNumber.EN_OK.value)
+
         self._root_folder_id = None
         self._csrf_token = None
         self._original_file_ids = None
@@ -115,19 +170,19 @@ class OverleafProject:
 
     @property
     def project_url(self) -> str:
-        return f"{PROJECTS_URL}/{self._project_id}"
+        return f"{PROJECTS_URL}/{self.project_id}"
 
     @property
     def download_url(self) -> str:
-        return f"{PROJECTS_URL}/{self._project_id}/download/zip"
+        return f"{PROJECTS_URL}/{self.project_id}/download/zip"
 
     @property
     def upload_url(self) -> str:
-        return f"{PROJECTS_URL}/{self._project_id}/upload"
+        return f"{PROJECTS_URL}/{self.project_id}/upload"
 
     @property
     def updates_url(self) -> str:
-        return f"{PROJECTS_URL}/{self._project_id}/updates"
+        return f"{PROJECTS_URL}/{self.project_id}/updates"
 
     @property
     def root_folder_id(self) -> str:
@@ -136,7 +191,7 @@ class OverleafProject:
             self._root_folder_id = self.original_file_ids["_id"]
         return self._root_folder_id
 
-    def login(self) -> None:
+    def _login(self) -> None:
         if self._logged_in:
             return
         LOGGER.info("Logging in to Overleaf...")
@@ -201,6 +256,52 @@ class OverleafProject:
                 if file and file not in (zip_info.filename for zip_info in zip_ref.filelist):
                     LOGGER.debug("Deleting local %s...", file)
                     os.remove(os.path.join(LATEX_PROJECT_DIR, file))
+
+    def _migrate_revision(self, revision: dict, merge_old: bool = False) -> float:
+        """
+        Migrate the revision to the git repository.
+        `old`: Whether to merge all old revisions.
+        """
+        toV = revision["toV"]
+        LOGGER.info("Migrating revision %d...", toV)
+        try:
+            ts = self._download(toV)
+        except requests.HTTPError as e:
+            LOGGER.error("Failed to download revision %s: %s", revision, e)
+            LOGGER.error("Please remove the working directory and try again later. Exiting...")
+            exit(ErrorNumber.EN_HTTP_ERROR.value)
+        self._unzip()
+        name = ";".join(f"{user["last_name"]}, {user["first_name"]}" for user in revision["meta"]["users"])
+        email = ";".join(user["email"] for user in revision["meta"]["users"])
+        _git("add", ".")
+        _git(
+            "commit",
+            f"--date=@{revision["meta"]["end_ts"] // 1000}",
+            f"--author={name} <{email}>",
+            "-m",
+            f"{"old" if merge_old else revision['fromV']}->{toV}",
+        )
+        LOGGER.info("Version %s migrated.", toV)
+        return ts
+
+    def _git_repo_init(self, n_revisions: int) -> None:
+        history: list[dict] = json.loads(self.history)["updates"]
+        history_length = len(history)
+        # Fetch one more revision: old->xxx
+        history = history[: n_revisions + 1 if n_revisions > 0 or n_revisions + 1 > history_length else None]
+
+        LOGGER.info("Migrating all older revisions into one git revision...")
+        self._migrate_revision(history[-1], merge_old=True)
+        for i, revision in enumerate(reversed(history[:-1])):
+            LOGGER.info("%d revision(s) to be migrated.", len(history) - i - 1)
+            ts = self._migrate_revision(revision)
+            if len(history) >= 30:
+                _sleep_until(ts + 120)
+        _git("checkout", "-b", LOCAL_BRANCH)
+
+        # Record the mapping of synced remote version and local commit ID
+        with open(GIT_MAPPING_FILE, "w") as f:
+            f.write(f"{history[0]["toV"]}:{self.latest_commit_id}")
 
     def _upload(self, file_path: str, dry_run=False) -> None:
         LOGGER.info("Uploading %s...", file_path)
@@ -268,11 +369,11 @@ class OverleafProject:
         if self._original_file_ids:
             return self._original_file_ids
 
-        LOGGER.info("Fetching document IDs from Overleaf project %s...", self._project_id)
-        response = self._session.get(f"{OVERLEAF_URL}/socket.io/1/?projectId={self._project_id}")
+        LOGGER.info("Fetching document IDs from Overleaf project %s...", self.project_id)
+        response = self._session.get(f"{OVERLEAF_URL}/socket.io/1/?projectId={self.project_id}")
         ws_id = response.text.split(":")[0]
         ws = websocket.create_connection(
-            f"wss://overleaf.s3lab.io/socket.io/1/websocket/{ws_id}?projectId={self._project_id}"
+            f"wss://overleaf.s3lab.io/socket.io/1/websocket/{ws_id}?projectId={self.project_id}"
         )
         data: str
         while True:
@@ -420,23 +521,6 @@ class OverleafProject:
             .split("\n")
         )
 
-    @staticmethod
-    def sanity_check() -> None:
-        if not os.path.exists(WORKING_DIR):
-            LOGGER.error(
-                "Overleaf sync directory `%s` does not exist. Please run `init` command first.", WORKING_DIR_NAME
-            )
-            exit(ErrorNumber.EN_NOT_INITIALIZED_ERROR.value)
-        if not os.path.exists(CONFIG_FILE):
-            LOGGER.error("Configuration file `%s` does not exist. Please reinitialize the project.", CONFIG_FILE)
-            exit(ErrorNumber.EN_WKDIR_CORRUPTED_ERROR.value)
-        if not os.path.exists(os.path.join(LATEX_PROJECT_DIR, ".git")):
-            LOGGER.error(
-                "Git is not initialized for LaTeX project in directory `%s`. Please reinitialize the project.",
-                LATEX_PROJECT_DIR,
-            )
-            exit(ErrorNumber.EN_GIT_DIR_CORRUPTED_ERROR.value)
-
     def pull(self, keep=True) -> None:
         if not self.is_remote_updated:
             LOGGER.info("No updates available.")
@@ -534,72 +618,6 @@ class OverleafProject:
         if not dry_run:
             project.pull()
 
-    def _migrate_revision(self, revision: dict, merge_old=False) -> float:
-        """
-        Migrate the revision to the git repository.
-        `old`: Whether to merge all old revisions.
-        """
-        toV = revision["toV"]
-        LOGGER.info("Migrating revision %d...", toV)
-        try:
-            ts = self._download(toV)
-        except requests.HTTPError as e:
-            LOGGER.error("Failed to download revision %s: %s", revision, e)
-            LOGGER.error("Please remove the working directory and try again later. Exiting...")
-            exit(ErrorNumber.EN_HTTP_ERROR.value)
-        self._unzip()
-        name = ";".join(f"{user["last_name"]}, {user["first_name"]}" for user in revision["meta"]["users"])
-        email = ";".join(user["email"] for user in revision["meta"]["users"])
-        _git("add", ".")
-        _git(
-            "commit",
-            f"--date=@{revision["meta"]["end_ts"] // 1000}",
-            f"--author={name} <{email}>",
-            "-m",
-            f"{revision['fromV'] if merge_old else "old"}->{toV}",
-        )
-        LOGGER.info("Version %s migrated.", toV)
-        return ts
-
-    @classmethod
-    def init(cls, user: str, password: str, project_id: str, last_revision: int) -> None:
-        LOGGER.info("Initializing Overleaf project...")
-        # Create working directory
-        os.makedirs(WORKING_DIR, exist_ok=True)
-        # Check if working directory exists
-        if os.path.exists(CONFIG_FILE):
-            LOGGER.warning("Configuration file `%s` already exists. Overwriting...", CONFIG_FILE)
-        # Write `config.json`
-        with open(CONFIG_FILE, "w") as f:
-            json.dump({"username": user, "password": password, "project_id": project_id}, f)
-        LOGGER.info("Configuration file saved to %s", CONFIG_FILE)
-        # Write `.gitignore`
-        with open(os.path.join(WORKING_DIR, ".gitignore"), "w") as f:
-            f.write("*")
-
-        self = cls(user, password, project_id)
-        self.login()
-
-        LOGGER.info("Initializing git repository in %s...", LATEX_PROJECT_DIR)
-        _git("init", "-b", OVERLEAF_BRANCH)
-        LOGGER.info("Git repository initialized.")
-
-        # Migrate to git
-        history: list[dict] = json.loads(self.history)["updates"][: last_revision + 1 if last_revision > 0 else None]
-
-        LOGGER.info("Migrating all old revisions...")
-        self._migrate_revision(history[-1], merge_old=True)
-        for i, revision in enumerate(reversed(history[:-1])):
-            LOGGER.info("%d revision(s) to be migrated.", len(history) - i - 1)
-            ts = self._migrate_revision(revision)
-            if len(history) >= 30:
-                _sleep_until(ts + 120)
-        _git("checkout", "-b", LOCAL_BRANCH)
-
-        # Record the mapping of synced remote version and local commit ID
-        with open(GIT_MAPPING_FILE, "w") as f:
-            f.write(f"{history[0]["toV"]}:{self.latest_commit_id}")
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(prog="overleaf-sync.py", description="Overleaf Project Sync Tool")
@@ -617,7 +635,7 @@ if __name__ == "__main__":
         "--revision",
         type=int,
         default=3,
-        help="Fetch the most recent N revisions, when N > 30, it will sleep for 2 minutes after each download. N<=0 means all revisions.",
+        help="Fetch the most recent N revisions, when N > 30, it will sleep for 2 minutes after each download. N <= 0 means all revisions.",
     )
 
     pull_parser = subparsers.add_parser("pull", help="Pull changes from Overleaf project")
@@ -635,16 +653,15 @@ if __name__ == "__main__":
         setup_file_logger(LOGGER)
 
     if args.command == "init":
-        OverleafProject.init(args.username, args.password, args.project_id, args.revision)
-        exit(ErrorNumber.EN_OK.value)
-
-    OverleafProject.sanity_check()
-
-    with open(CONFIG_FILE, "r") as config_file:
-        config = json.load(config_file)
-
-    project = OverleafProject(config["username"], config["password"], config["project_id"])
-    project.login()
+        project = OverleafProject(
+            init=True,
+            username=args.username,
+            password=args.password,
+            project_id=args.project_id,
+            n_revisions=args.revision,
+        )
+    else:
+        project = OverleafProject()
 
     match args.command:
         case "pull":
