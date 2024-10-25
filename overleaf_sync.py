@@ -636,12 +636,8 @@ if __name__ == "__main__":
 
     OverleafProject.sanity_check()
 
-    try:
-        with open(CONFIG_FILE, "r") as config_file:
-            config = json.load(config_file)
-    except FileNotFoundError:
-        LOGGER.error("Configuration file %s does not exist. Overleaf sync directory is corrupted.", CONFIG_FILE)
-        exit(ErrorNumber.EN_CONFIG_NOT_EXIST.value)
+    with open(CONFIG_FILE, "r") as config_file:
+        config = json.load(config_file)
 
     project = OverleafProject(config["username"], config["password"], config["project_id"])
     project.login()
