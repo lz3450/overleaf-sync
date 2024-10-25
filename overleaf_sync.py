@@ -41,6 +41,8 @@ LOG_DIR = ".overleaf-sync-logs"
 LOGGER = logging.getLogger(__name__)
 LOGGER_FORMATTER = logging.Formatter("[%(asctime)s] [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
 
+REQUEST_INTERVAL = 9
+
 
 def setup_logger(logger: logging.Logger, debug: bool) -> None:
     logger.setLevel(logging.DEBUG)
@@ -67,6 +69,7 @@ class ErrorNumber(Enum):
     EN_CONFIG_NOT_EXIST = 2
     EN_PULL_ERROR = 3
     EN_PUSH_ERROR = 4
+    EN_NOT_INITIALIZED = 5
 
 
 class OverleafProject:
@@ -141,25 +144,34 @@ class OverleafProject:
         self._csrf_token = _csrf_token
         return self._csrf_token
 
-    def _download(self) -> None:
-        LOGGER.info("Downloading project ZIP from url: %s...", self.download_url)
-        response = self._session.get(self.download_url)
+    def download(self, version: int | None = None) -> None:
+        url = f"{self.project_url}/version/{version}/zip" if version else self.download_url
+        LOGGER.info("Downloading project ZIP from url: %s...", url)
+        response = self._session.get(url)
         response.raise_for_status()
         with open(ZIP_FILE, "wb") as f:
             f.write(response.content)
         LOGGER.debug("Project ZIP downloaded as %s", ZIP_FILE)
 
-    def _unzip(self, keep=True) -> None:
+    def unzip(self, file_list: list | None = None, keep=True) -> None:
+        """
+        Unzip the downloaded ZIP file to the LaTeX project directory.
+        `file_list`: List of files to extract. If `None`, extract all files.
+        `keep`: Keep remotely deleted files.
+        """
         LOGGER.info("Unzipping file %s to directory %s...", ZIP_FILE, LATEX_PROJECT_DIR)
         with zipfile.ZipFile(ZIP_FILE, "r") as zip_ref:
-            # for file in zip_ref.filelist:
-            #     LOGGER.info("Extracting %s...", file.filename)
-            #     zip_ref.extract(file, LATEX_PROJECT_DIR)
-            zip_ref.extractall(LATEX_PROJECT_DIR)
+            # TODO: not tested
+            if file_list:
+                for file in zip_ref.filelist:
+                    LOGGER.info("Extracting %s...", file.filename)
+                    zip_ref.extract(file, LATEX_PROJECT_DIR)
+            else:
+                zip_ref.extractall(LATEX_PROJECT_DIR)
             if not keep:
                 return
             for file in self.managed_files:
-                if file not in (zip_info.filename for zip_info in zip_ref.filelist):
+                if file and file not in (zip_info.filename for zip_info in zip_ref.filelist):
                     LOGGER.info("Deleting local %s...", file)
                     os.remove(os.path.join(LATEX_PROJECT_DIR, file))
 
@@ -307,7 +319,7 @@ class OverleafProject:
             raise ValueError(f"No id found for `{path}`")
 
     @property
-    def project_updates(self) -> str:
+    def history(self) -> str:
         headers = {
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
         }
@@ -320,7 +332,7 @@ class OverleafProject:
 
     @property
     def remote_version(self) -> int:
-        return json.loads(self.project_updates)["updates"][0]["toV"]
+        return json.loads(self.history)["updates"][0]["toV"]
 
     def _get_changed_files(self) -> str:
         if not os.path.exists(LATEST_COMMIT_FILE):
@@ -482,17 +494,63 @@ class OverleafProject:
         if not dry_run:
             project.pull()
 
-    @staticmethod
-    def init(user: str, password: str, project_id: str) -> None:
-        if os.path.exists(WORKING_DIR):
-            LOGGER.warning("Working directory `%s` already exists. Ignore.", WORKING_DIR)
-            return
-        os.mkdir(WORKING_DIR)
+    @classmethod
+    def init(cls, user: str, password: str, project_id: str) -> None:
+        # Create working directory
+        os.makedirs(WORKING_DIR, exist_ok=True)
+        # Check if working directory exists
+        if os.path.exists(CONFIG_FILE):
+            LOGGER.warning("Configuration file `%s` already exists. Overwriting...", CONFIG_FILE)
+        # Write `config.json`
         with open(CONFIG_FILE, "w") as f:
             json.dump({"username": user, "password": password, "project_id": project_id}, f)
         LOGGER.info("Configuration file saved to %s", CONFIG_FILE)
+        # Write `.gitignore`
         with open(os.path.join(WORKING_DIR, ".gitignore"), "w") as f:
             f.write("*")
+
+        #
+        project = cls(user, password, project_id)
+        project.login()
+
+        LOGGER.info("Initializing git repository in %s...", LATEX_PROJECT_DIR)
+        cmd = ["git", "-C", LATEX_PROJECT_DIR, "init"]
+        LOGGER.debug("Running command: %s", " ".join(cmd))
+        subprocess.run(cmd, check=True)
+        LOGGER.info("Git repository initialized.")
+
+        # Migrate to git
+        history: list[dict] = json.loads(project.history)["updates"]
+
+        for version in reversed(history):
+            toV = version["toV"]
+            LOGGER.debug("Migrate version: %s", toV)
+            project.download(version=toV)
+            sleep(9)
+            project.unzip()
+            date = f"@{version["meta"]["end_ts"] // 1000}"
+            names: list[str] = []
+            emails: list[str] = []
+            for u in version["meta"]["users"]:
+                u: dict[str, str]
+                names.append(f"{u["last_name"]}, {u["first_name"]}")
+                emails.append(u["email"])
+            cmd = ["git", "-C", LATEX_PROJECT_DIR, "add", "."]
+            LOGGER.debug("Running command: %s", " ".join(cmd))
+            subprocess.run(cmd, check=True)
+            cmd = [
+                "git",
+                "-C",
+                LATEX_PROJECT_DIR,
+                "commit",
+                f"--date={date}",
+                f"--author={";".join(names)} <{';'.join(emails)}>",
+                "-m",
+                f"Overleaf version: {toV}",
+            ]
+            LOGGER.debug("Running command: %s", " ".join(cmd))
+            subprocess.run(cmd, check=True)
+            LOGGER.info("Version %s migrated.", toV)
 
 
 if __name__ == "__main__":
