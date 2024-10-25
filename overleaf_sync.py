@@ -34,7 +34,7 @@ CONFIG_FILE = os.path.join(WORKING_DIR, "config.json")
 ZIP_FILE = os.path.join(WORKING_DIR, "latex.zip")
 PROJECT_UPDATES_FILE = os.path.join(WORKING_DIR, "updates.json")
 IDS_FILE = os.path.join(WORKING_DIR, "file_ids.json")
-GIT_MAPPING_FILE = os.path.join(WORKING_DIR, "git_mapping.json")
+GIT_MAPPING_FILE = os.path.join(WORKING_DIR, "git_mapping")
 LATEST_COMMIT_FILE = os.path.join(WORKING_DIR, "latest_commit.txt")
 REMOTE_VERSION_FILE = os.path.join(WORKING_DIR, "remote_version.txt")
 
@@ -304,6 +304,10 @@ class OverleafProject:
             f.write(f"{history[0]["toV"]}:{self.latest_commit_id}")
 
     def _upload(self, file_path: str, dry_run=False) -> None:
+        """
+        Upload the file to the Overleaf project.
+        There is a rate limit of 200 request per 15 minutes.
+        """
         LOGGER.info("Uploading %s...", file_path)
         if dry_run:
             return
