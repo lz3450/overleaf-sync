@@ -616,7 +616,7 @@ class OverleafProject:
         assert self.remote_overleaf_rev >= self.local_overleaf_rev
         return self.remote_overleaf_rev > self.local_overleaf_rev
 
-    def pull(self, dry_run=False, _skip_branch_switch=False) -> None:
+    def pull(self, dry_run=False, _branch_switching=True, _branch_rebasing=True) -> None:
         if not self.is_there_new_overleaf_rev:
             LOGGER.info("No new changes to pull.")
             return
@@ -647,15 +647,12 @@ class OverleafProject:
             _git("commit", "--amend", "-m", f"{_git("log", "-1", "--pretty=%B")} (not complete)")
             _git("reset", "--hard", "HEAD~1")
         self._migrate_revisions_diff(upcoming_overleaf_rev)
-        if _skip_branch_switch:
-            return
-        if self.is_there_new_working_commit:
-            LOGGER.info(
-                "Found new changes in the working branch. Please run `git merger %s` manually.", OVERLEAF_BRANCH
-            )
+
+        if _branch_switching:
             _git("switch", WORKING_BRANCH)
-            return
-        self._reset_working_branch()
+
+        if _branch_rebasing:
+            _git("rebase", OVERLEAF_BRANCH, WORKING_BRANCH)
 
     ################################################################################
 
