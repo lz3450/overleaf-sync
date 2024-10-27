@@ -402,6 +402,7 @@ class OverleafProject:
         self.overleaf_broker.login()
 
     def _sanity_check(self) -> None:
+        LOGGER.info("Performing sanity checks...")
         # Check if working directory exists
         if not os.path.exists(WORKING_DIR):
             LOGGER.error(
@@ -431,7 +432,7 @@ class OverleafProject:
 
     @property
     def managed_files(self) -> list[str]:
-        return _git("ls-files").split("\n")
+        return _git("ls-files").splitlines()
 
     def _unzip(self, zip_file: str, file_list: list | None = None) -> None:
         """
@@ -665,7 +666,7 @@ class OverleafProject:
     @property
     def working_branch_name_status(self) -> list[str]:
         assert _git("branch", "--show-current") == WORKING_BRANCH
-        return _git("diff", "--name-status", self.starting_working_commit).split("\n")
+        return _git("diff", "--name-status", self.starting_working_commit).splitlines()
 
     def push(self, stash=False, force=False, dry_run=False) -> None:
         # Check if there are new changes to push
