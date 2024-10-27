@@ -36,12 +36,11 @@ CONFIG_FILE = os.path.join(WORKING_DIR, "config.json")
 ZIP_FILE = os.path.join(WORKING_DIR, "latex.zip")
 PROJECT_UPDATES_FILE = os.path.join(WORKING_DIR, "updates.json")
 IDS_FILE = os.path.join(WORKING_DIR, "file_ids.json")
-REVISION_MAPPING_FILE = os.path.join(WORKING_DIR, "revision_mapping")
-LATEST_COMMIT_FILE = os.path.join(WORKING_DIR, "latest_commit.txt")
+FIRST_WORKING_COMMIT_FILE = os.path.join(WORKING_DIR, "first_working_commit")
 REMOTE_VERSION_FILE = os.path.join(WORKING_DIR, "remote_version.txt")
 
 OVERLEAF_BRANCH = "overleaf"
-LOCAL_BRANCH = "local"
+WORKING_BRANCH = "working"
 
 LOGGER = logging.getLogger(__name__)
 LOGGER_FORMATTER = logging.Formatter("[%(asctime)s] [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
@@ -158,6 +157,9 @@ class OverleafBroker:
             json.dump(self._updates, f)
         return self._updates
 
+    def refresh_updates(self) -> None:
+        self._updates = None
+
     def download_zip(self, revision: int | None = None) -> float:
         """
         Download the project/revision ZIP file from Overleaf.
@@ -185,7 +187,7 @@ class OverleafBroker:
         return self._csrf_token
 
     def filetree_diff(self, from_: int, to_: int) -> list[dict]:
-        LOGGER.info("Fetching filetree diff from %d to %d...", from_, to_)
+        LOGGER.debug("Fetching filetree diff from %d to %d...", from_, to_)
         url = f"{PROJECTS_URL}/{self._project_id}/filetree/diff?from={from_}&to={to_}"
         headers = {
             "Accept": "application/json",
@@ -197,7 +199,7 @@ class OverleafBroker:
         return json.loads(response.text)["diff"]
 
     def diff(self, from_: int, to_: int, pathname: str) -> list[dict]:
-        LOGGER.info("Fetching diff of file %s from %d to %d...", pathname, from_, to_)
+        LOGGER.debug("Fetching diff of file %s from %d to %d...", pathname, from_, to_)
         url = f"{PROJECTS_URL}/{self._project_id}/diff?from={from_}&to={to_}&pathname={pathname}"
         headers = {
             "Accept": "application/json",
@@ -213,7 +215,7 @@ class OverleafBroker:
         if self._original_file_ids:
             return self._original_file_ids
 
-        LOGGER.info("Fetching document IDs from Overleaf project %s...", self._project_id)
+        LOGGER.debug("Fetching document IDs from Overleaf project %s...", self._project_id)
         response = self._session.get(f"{OVERLEAF_URL}/socket.io/1/?projectId={self._project_id}")
         ws_id = response.text.split(":")[0]
         ws = websocket.create_connection(
@@ -294,7 +296,7 @@ class OverleafBroker:
         return self._indexed_file_ids
 
     def _find_id_type(self, path: str) -> tuple[str, str]:
-        LOGGER.info("Finding id for `%s`...", path)
+        LOGGER.debug("Finding id for `%s`...", path)
         ids = self.indexed_file_ids
         if path in ids["fileRefs"]:
             return ids["fileRefs"][path], "file"
@@ -325,15 +327,18 @@ class OverleafBroker:
 
     def delete(self, path: str, dry_run=False) -> None:
         id, type = self._find_id_type(path)
-        LOGGER.info("Deleting %s: %s %s", type, path, id)
+        LOGGER.info('Deleting "%s": %s %s', type, path, id)
 
-        if type == "folder":
-            if input(f"Are you sure you want to delete folder {path}? (y/n): ").strip().lower() not in ["y", "yes"]:
-                LOGGER.info("Operation cancelled.")
-                return
+        if type == "folder" and input(
+            f"Are you sure you want to delete folder {path}? (y/n): "
+        ).strip().lower() not in ["y", "yes"]:
+            LOGGER.info("Operation cancelled.")
+            return
+
         if dry_run:
             return
 
+        url = f"{self._project_url}/{type}/{id}"
         headers = {
             "Accept": "application/json",
             "Origin": OVERLEAF_URL,
@@ -342,7 +347,7 @@ class OverleafBroker:
         }
         if type not in ["file", "doc", "folder"]:
             raise ValueError(f"Invalid type: {type}")
-        response = self._session.delete(f"{self._project_url}/{type}/{id}", headers=headers)
+        response = self._session.delete(url, headers=headers)
         response.raise_for_status()
 
 
@@ -415,10 +420,11 @@ class OverleafProject:
                 LATEX_PROJECT_DIR,
             )
             exit(ErrorNumber.GIT_DIR_CORRUPTED_ERROR)
-        # Check if revision mapping file exists
-        if not os.path.exists(REVISION_MAPPING_FILE):
+        # Check if the first working commit file exists
+        if not os.path.exists(FIRST_WORKING_COMMIT_FILE):
             LOGGER.error(
-                "Revision mapping file `%s` does not exist. Please reinitialize the project.", REVISION_MAPPING_FILE
+                "First working commit file `%s` does not exist. Please reinitialize the project.",
+                FIRST_WORKING_COMMIT_FILE,
             )
             exit(ErrorNumber.WKDIR_CORRUPTED_ERROR)
 
@@ -440,7 +446,7 @@ class OverleafProject:
             zip_filenames = {zip_info.filename for zip_info in zip_ref.filelist}
             for managed_file in self.managed_files:
                 if managed_file and managed_file not in zip_filenames:
-                    LOGGER.info("Deleting local file %s...", managed_file)
+                    LOGGER.info("Deleting file %s from filesystem...", managed_file)
                     os.remove(os.path.join(LATEX_PROJECT_DIR, managed_file))
 
     def _migrate_revision_zip(self, revision: dict, merge_old: bool = False) -> float:
@@ -484,7 +490,7 @@ class OverleafProject:
             if revision_length >= 30:
                 _sleep_until(ts + 120)
 
-    def _migrate_revision_diff(self, revision: dict, one_by_one: bool = False) -> None:
+    def _migrate_revision_diff(self, revision: dict) -> None:
         """
         Migrate the overleaf revision to a git revision using diff requests.
         Note that this function is **not** responsible for switching branch.
@@ -529,25 +535,24 @@ class OverleafProject:
                     raise ValueError(f"Unsupported operation: {item['operation']}")
 
         LOGGER.info("Migrating (diff) revision from %d to %d...", fromV, toV)
-        for from_, to_ in ((i, i + 1) for i in range(fromV, toV)) if one_by_one else [(fromV, toV)]:
-            # Operate local files
-            filetree_diff = self.overleaf_broker.filetree_diff(from_, to_)
-            for item in filetree_diff:
-                if not (operation := item.get("operation", None)):
-                    continue
-                pathname = item["pathname"]
-                diff = self.overleaf_broker.diff(from_, to_, pathname)
-                _migrate(operation, pathname, diff)
-            # Make git commit
-            _git("add", ".")
-            _git(
-                "commit",
-                f"--date=@{ts}",
-                f"--author={name} <{email}>",
-                "-m",
-                f"{to_}" if one_by_one else f"{from_}->{to_}",
-            )
-            LOGGER.info("Revision %d->%d migrated.", from_, to_)
+        # Operate files on filesystem
+        filetree_diff = self.overleaf_broker.filetree_diff(fromV, toV)
+        for item in filetree_diff:
+            if not (operation := item.get("operation", None)):
+                continue
+            pathname = item["pathname"]
+            diff = self.overleaf_broker.diff(fromV, toV, pathname)
+            _migrate(operation, pathname, diff)
+        # Make git commit
+        _git("add", ".")
+        _git(
+            "commit",
+            f"--date=@{ts}",
+            f"--author={name} <{email}>",
+            "-m",
+            f"{fromV}->{toV}",
+        )
+        LOGGER.info("Revision %d->%d migrated.", fromV, toV)
 
     def _migrate_revisions_diff(self, revisions: list[dict]) -> None:
         """
@@ -560,22 +565,31 @@ class OverleafProject:
             self._migrate_revision_diff(rev)
 
     @property
-    def latest_commit_id(self) -> str:
-        return _git("rev-parse", "HEAD")
-
-    @property
-    def remote_overleaf_revision(self) -> int:
+    def remote_overleaf_rev(self) -> int:
         return self.overleaf_broker.updates[0]["toV"]
 
     @property
-    def local_overleaf_revision(self) -> int:
-        with open(REVISION_MAPPING_FILE, "r") as f:
-            return int(f.read().split(":")[0])
+    def local_overleaf_rev(self) -> int:
+        return int(_git("log", "-1", "--pretty=%B", OVERLEAF_BRANCH).split("->")[1])
 
-    @local_overleaf_revision.setter
-    def local_overleaf_revision(self, revision: int) -> None:
-        with open(REVISION_MAPPING_FILE, "w") as f:
-            f.write(f"{revision}:{self.latest_commit_id}")
+    @property
+    def current_working_commit(self) -> str:
+        return _git("rev-parse", WORKING_BRANCH)
+
+    @property
+    def first_working_commit(self) -> str:
+        # The commit ID of the overleaf branch after `init` or latest `pull`
+        with open(FIRST_WORKING_COMMIT_FILE, "r") as f:
+            return f.read()
+
+    def _reset_working_branch(self) -> None:
+        _git("switch", "-C", WORKING_BRANCH)
+        with open(FIRST_WORKING_COMMIT_FILE, "w") as f:
+            f.write(self.current_working_commit)
+
+    @property
+    def is_there_new_working_commit(self) -> bool:
+        return self.current_working_commit != self.first_working_commit
 
     def _git_repo_init_zip(self, n_revisions: int) -> None:
         updates: list[dict] = self.overleaf_broker.updates
@@ -588,63 +602,158 @@ class OverleafProject:
         self._migrate_revision_zip(updates[-1], merge_old=True)
         LOGGER.info("Migrating the rest of the revisions...")
         self._migrate_revisions_zip(updates[:-1])
-        # Record the mapping of synced remote version and local commit ID
-        self.local_overleaf_revision = self.remote_overleaf_revision
-        _git("switch", "-c", LOCAL_BRANCH)
+        self._reset_working_branch()
 
     def _git_repo_init_diff(self) -> None:
-        # Latest revision may change during the migration
-        updates = (
-            self.overleaf_broker.updates[1:] if len(self.overleaf_broker.updates) > 1 else self.overleaf_broker.updates
-        )
-        LOGGER.info("Migrating all revisions except the latest one...")
+        LOGGER.info("Migrating all revisions...")
         _git("switch", "-c", OVERLEAF_BRANCH)
-        self._migrate_revisions_diff(updates)
-        self._migrate_revision_diff(self.overleaf_broker.updates[0], one_by_one=True)
-        self.local_overleaf_revision = self.remote_overleaf_revision
-        _git("switch", "-c", LOCAL_BRANCH)
+        self._migrate_revisions_diff(self.overleaf_broker.updates)
+        _git("switch", "-c", WORKING_BRANCH)
+        self._reset_working_branch()
 
     @property
-    def new_overleaf_revisions(self) -> bool:
-        LOGGER.info(
-            "remote/local overleaf revision: %d/%d", self.remote_overleaf_revision, self.local_overleaf_revision
-        )
-        assert self.remote_overleaf_revision >= self.local_overleaf_revision
-        return self.remote_overleaf_revision > self.local_overleaf_revision
+    def is_there_new_overleaf_rev(self) -> bool:
+        LOGGER.info("Fetched remote/local overleaf revision: %d/%d", self.remote_overleaf_rev, self.local_overleaf_rev)
+        assert self.remote_overleaf_rev >= self.local_overleaf_rev
+        return self.remote_overleaf_rev > self.local_overleaf_rev
 
-    @property
-    def new_local_revisions(self) -> bool:
-        # TODO: not tested
-        return _git("status", "--porcelain") != ""
-
-    def pull(self) -> None:
-        if not self.new_overleaf_revisions:
+    def pull(self, dry_run=False, _skip_branch_switch=False) -> None:
+        if not self.is_there_new_overleaf_rev:
             LOGGER.info("No new changes to pull.")
             return
+        LOGGER.info("Pulling changes from Overleaf project...")
 
-        # Get all new overleaf revisions
-        upcoming_overleaf_revisions = list(
-            takewhile(lambda revision: revision["toV"] > self.local_overleaf_revision, self.overleaf_broker.updates)
+        # Get all new overleaf revisions and migrate using ZIP approach
+        upcoming_overleaf_rev = list(
+            takewhile(lambda rev: rev["toV"] > self.local_overleaf_rev, self.overleaf_broker.updates)
         )
-        # upcoming_overleaf_revisions = []
-        # for revision in self.overleaf_broker.history:
-        #     if revision["toV"] <= self.local_overleaf_revision:
-        #         break
-        #     upcoming_overleaf_revisions.append(revision)
+
         LOGGER.info(
             "%d upcoming revisions: %s",
-            len(upcoming_overleaf_revisions),
-            ", ".join(str(rev["toV"]) for rev in upcoming_overleaf_revisions),
+            len(upcoming_overleaf_rev),
+            ", ".join(f"{rev["fromV"]}->{rev["toV"]}" for rev in reversed(upcoming_overleaf_rev)),
         )
+
+        if dry_run:
+            return
+
         _git("switch", OVERLEAF_BRANCH)
-        self._migrate_revisions_zip(upcoming_overleaf_revisions)
-        # Record the mapping of synced remote version and local commit ID
-        self.local_overleaf_revision = self.remote_overleaf_revision
-        if self.new_local_revisions:
-            _git("switch", LOCAL_BRANCH)
-        _git("switch", "-m", LOCAL_BRANCH)
+
+        # Using ZIP approach
+        # self._migrate_revisions_zip(upcoming_overleaf_revisions)
+
+        # Using diff approach
+        # The corresponding remove overleaf revision of latest local overleaf revision may changed after the migration
+        if upcoming_overleaf_rev[-1]["fromV"] < self.local_overleaf_rev:
+            _git("commit", "--amend", "-m", f"{_git("log", "-1", "--pretty=%B")} (not complete)")
+            _git("reset", "--hard", "HEAD~1")
+        self._migrate_revisions_diff(upcoming_overleaf_rev)
+        if _skip_branch_switch:
+            return
+        if self.is_there_new_working_commit:
+            LOGGER.info(
+                "Found new changes in the working branch. Please run `git merger %s` manually.", OVERLEAF_BRANCH
+            )
+            _git("switch", WORKING_BRANCH)
+            return
+        self._reset_working_branch()
 
     ################################################################################
+
+    @property
+    def is_working_tree_clean(self) -> bool:
+        return not _git("status", "--porcelain")
+
+    @property
+    def working_branch_name_status(self) -> list[str]:
+        assert _git("branch", "--show-current") == WORKING_BRANCH
+        return _git("diff", "--name-status", self.first_working_commit).split("\n")
+
+    def push(self, stash=False, force=False, dry_run=False) -> None:
+        # Check if there are new changes to push
+        if not self.is_there_new_working_commit:
+            LOGGER.info("No new changes to push.")
+            return
+
+        _git("switch", WORKING_BRANCH)
+
+        # Check if the working tree is clean
+        if not self.is_working_tree_clean:
+            LOGGER.error("Cannot push changes from a dirty working tree.")
+            exit(ErrorNumber.PUSH_ERROR)
+
+        if force:
+            LOGGER.warning("Force pushing changes to Overleaf project...")
+            LOGGER.warning("Not implemented yet.")
+            return
+
+        # Check if there are new changes in remote overleaf
+        if self.is_there_new_overleaf_rev:
+            LOGGER.error("There are new remote overleaf revisions. Please pull first.")
+            exit(ErrorNumber.PUSH_ERROR)
+
+        # TODO: add option for stash first
+
+        # Check if there are unmerged changes from the overleaf branch to the working branch
+        # TODO
+
+        LOGGER.info("Pushing changes to Overleaf project...")
+
+        upload_list: list[str] = []
+        delete_list: list[str] = []
+        for line in self.working_branch_name_status:
+            LOGGER.info("status: %s", line)
+            columns = line.split("\t")
+            status = columns[0]
+            match status:
+                case "M" | "A":
+                    assert len(columns) == 2
+                    pathname = columns[1]
+                    upload_list.append(pathname)
+                case "D":
+                    assert len(columns) == 2
+                    pathname = columns[1]
+                    delete_list.append(pathname)
+                case "R100":
+                    assert len(columns) == 3
+                    old_pathname, new_pathname = columns[1], columns[2]
+                    delete_list.append(old_pathname)
+                    upload_list.append(new_pathname)
+                case _:
+                    raise ValueError(f"Unsupported status: {status}")
+
+        for pathname in delete_list:
+            self.overleaf_broker.delete(pathname, dry_run)
+        for pathname in upload_list:
+            self.overleaf_broker.upload(pathname, dry_run)
+        self.overleaf_broker.refresh_updates()
+        self.pull(dry_run=dry_run, _skip_branch_switch=True)
+
+        assert _git("diff-tree", "-r", WORKING_BRANCH, OVERLEAF_BRANCH) == ""
+        _git("switch", OVERLEAF_BRANCH)
+        self._reset_working_branch()
+
+    # def _push(self, force=False, prune=False, dry_run=False) -> None:
+    #     if not self.new_local_revisions:
+    #         LOGGER.error("Cannot push changes from a dirty repository.")
+    #         exit(ErrorNumber.PUSH_ERROR)
+    #     if self.is_there_new_overleaf_rev:
+    #         LOGGER.error("Cannot push changes to a updated remote repository.")
+    #         exit(ErrorNumber.PUSH_ERROR)
+
+    #     if force:
+    #         LOGGER.info("Force pushing changes to Overleaf project...")
+
+    #         for file_path in self.managed_files:
+    #             self._upload(file_path, dry_run)
+    #         return
+
+    #     if prune:
+    #         for folder_path in self._find_empty_folder():
+    #             self._delete(folder_path, dry_run)
+
+    #     if not dry_run:
+    #         project.pull()
 
     def _find_empty_folder(self) -> list[str]:
         empty_folders: list[str] = []
@@ -700,57 +809,6 @@ class OverleafProject:
             .split("\n")
         )
 
-    def push(self, force=False, prune=False, dry_run=False) -> None:
-        if not self.new_local_revisions:
-            LOGGER.error("Cannot push changes from a dirty repository.")
-            exit(ErrorNumber.PUSH_ERROR)
-        if self.new_overleaf_revisions:
-            LOGGER.error("Cannot push changes to a updated remote repository.")
-            exit(ErrorNumber.PUSH_ERROR)
-
-        if force:
-            LOGGER.info("Force pushing changes to Overleaf project...")
-
-            for file_path in self.managed_files:
-                self._upload(file_path, dry_run)
-            return
-
-        delete_list: list[str] = []
-        upload_list: list[str] = []
-        for line in self._get_changed_files().split("\n"):
-            if not line:
-                continue
-            LOGGER.info("status: %s", line)
-            row = line.split("\t")
-            status = row[0]
-            match status:
-                case "D":
-                    assert len(row) == 2
-                    file_path = row[1]
-                    delete_list.append(file_path)
-                case "M" | "A":
-                    assert len(row) == 2
-                    file_path = row[1]
-                    upload_list.append(file_path)
-                case "R100":
-                    assert len(row) == 3
-                    old_file_path = row[1]
-                    new_file_path = row[2]
-                    delete_list.append(old_file_path)
-                    upload_list.append(new_file_path)
-                case _:
-                    raise ValueError(f"Unsupported status: {status}")
-        for file_path in delete_list:
-            self._delete(file_path, dry_run)
-        for file_path in upload_list:
-            self._upload(file_path, dry_run)
-        if prune:
-            for folder_path in self._find_empty_folder():
-                self._delete(folder_path, dry_run)
-
-        if not dry_run:
-            project.pull()
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(prog="overleaf-sync.py", description="Overleaf Project Sync Tool")
@@ -772,8 +830,10 @@ if __name__ == "__main__":
     # )
 
     pull_parser = subparsers.add_parser("pull", help="Pull changes from Overleaf project")
+    pull_parser.add_argument("-d", "--dry-run", action="store_true", help="Dry run mode")
 
     push_parser = subparsers.add_parser("push", help="Push changes to Overleaf project")
+    push_parser.add_argument("-s", "--stash", action="store_true", help="Stash changes before pushing")
     push_parser.add_argument("-f", "--force", action="store_true", help="Force push changes to Overleaf project")
     push_parser.add_argument("-p", "--prune", action="store_true", help="Prune empty folders")
     push_parser.add_argument("-d", "--dry-run", action="store_true", help="Dry run mode")
@@ -797,8 +857,8 @@ if __name__ == "__main__":
 
     match args.command:
         case "pull":
-            project.pull()
+            project.pull(dry_run=args.dry_run)
         case "push":
-            project.push(force=args.force, prune=args.prune, dry_run=args.dry_run)
+            project.push(stash=args.stash, force=args.force, dry_run=args.dry_run)
         case _:
             parser.print_help()
