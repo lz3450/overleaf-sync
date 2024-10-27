@@ -428,6 +428,10 @@ class OverleafProject:
             )
             exit(ErrorNumber.WKDIR_CORRUPTED_ERROR)
 
+    @property
+    def managed_files(self) -> list[str]:
+        return _git("ls-files").split("\n")
+
     def _unzip(self, zip_file: str, file_list: list | None = None) -> None:
         """
         Unzip the downloaded ZIP file to the LaTeX project directory.
@@ -577,19 +581,20 @@ class OverleafProject:
         return _git("rev-parse", WORKING_BRANCH)
 
     @property
-    def first_working_commit(self) -> str:
-        # The commit ID of the overleaf branch after `init` or latest `pull`
+    def starting_working_commit(self) -> str:
+        # The first commit ID the working branch
         with open(FIRST_WORKING_COMMIT_FILE, "r") as f:
             return f.read()
 
     def _reset_working_branch(self) -> None:
+        # Reset the working branch to HEAD, after `init`, `pull`, or `push`
         _git("switch", "-C", WORKING_BRANCH)
         with open(FIRST_WORKING_COMMIT_FILE, "w") as f:
             f.write(self.current_working_commit)
 
     @property
     def is_there_new_working_commit(self) -> bool:
-        return self.current_working_commit != self.first_working_commit
+        return self.current_working_commit != self.starting_working_commit
 
     def _git_repo_init_zip(self, n_revisions: int) -> None:
         updates: list[dict] = self.overleaf_broker.updates
@@ -667,7 +672,7 @@ class OverleafProject:
     @property
     def working_branch_name_status(self) -> list[str]:
         assert _git("branch", "--show-current") == WORKING_BRANCH
-        return _git("diff", "--name-status", self.first_working_commit).split("\n")
+        return _git("diff", "--name-status", self.starting_working_commit).split("\n")
 
     def push(self, stash=False, force=False, dry_run=False) -> None:
         # Check if there are new changes to push
@@ -733,82 +738,6 @@ class OverleafProject:
         _git("switch", OVERLEAF_BRANCH)
         self._reset_working_branch()
 
-    # def _push(self, force=False, prune=False, dry_run=False) -> None:
-    #     if not self.new_local_revisions:
-    #         LOGGER.error("Cannot push changes from a dirty repository.")
-    #         exit(ErrorNumber.PUSH_ERROR)
-    #     if self.is_there_new_overleaf_rev:
-    #         LOGGER.error("Cannot push changes to a updated remote repository.")
-    #         exit(ErrorNumber.PUSH_ERROR)
-
-    #     if force:
-    #         LOGGER.info("Force pushing changes to Overleaf project...")
-
-    #         for file_path in self.managed_files:
-    #             self._upload(file_path, dry_run)
-    #         return
-
-    #     if prune:
-    #         for folder_path in self._find_empty_folder():
-    #             self._delete(folder_path, dry_run)
-
-    #     if not dry_run:
-    #         project.pull()
-
-    def _find_empty_folder(self) -> list[str]:
-        empty_folders: list[str] = []
-
-        def _traverse_folders(folder: dict, parent_folder="") -> None:
-            if not folder.get("folders") and not folder.get("fileRefs") and not folder.get("docs"):
-                empty_folders.append(f'{parent_folder}/{folder["name"]}')
-            else:
-                all_sub_folders_empty = True
-                for sub_folder in folder.get("folders", []):
-                    _traverse_folders(sub_folder, f'{parent_folder}/{folder["name"]}')
-                    if sub_folder["_id"] not in empty_folders:
-                        all_sub_folders_empty = False
-                if all_sub_folders_empty and not folder.get("fileRefs") and not folder.get("docs"):
-                    empty_folders.append(f'{parent_folder}/{folder["name"]}')
-
-        # Start checking from the root level folders
-        for folder in self.overleaf_broker.original_file_ids.get("folders", []):
-            _traverse_folders(folder)
-
-        return [p.lstrip("/") for p in empty_folders]
-
-    def _get_changed_files(self) -> str:
-        try:
-            with open(LATEST_COMMIT_FILE, "r") as f:
-                latest_commit_id = f.read().strip()
-            LOGGER.info("Latest commit ID: %s", latest_commit_id)
-        except FileNotFoundError:
-            LOGGER.error("File %s does not exist.", LATEST_COMMIT_FILE)
-            exit(ErrorNumber.NOT_INITIALIZED_ERROR)
-
-        return subprocess.run(
-            ["git", "-C", LATEX_PROJECT_DIR, "diff", "--name-status", latest_commit_id], capture_output=True, text=True
-        ).stdout.strip()
-
-    @property
-    def is_empty_git_repo(self) -> bool:
-        return (
-            subprocess.run(
-                ["git", "-C", LATEX_PROJECT_DIR, "rev-list", "-n", "1", "--all"],
-                capture_output=True,
-                text=True,
-                check=True,
-            ).stdout.strip()
-            == ""
-        )
-
-    @property
-    def managed_files(self) -> list[str]:
-        return (
-            subprocess.run(["git", "-C", LATEX_PROJECT_DIR, "ls-files"], capture_output=True, text=True, check=True)
-            .stdout.strip()
-            .split("\n")
-        )
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(prog="overleaf-sync.py", description="Overleaf Project Sync Tool")
@@ -850,7 +779,6 @@ if __name__ == "__main__":
             username=args.username,
             password=args.password,
             project_id=args.project_id,
-            # n_revisions=args.revision,
         )
     else:
         project = OverleafProject()
