@@ -36,7 +36,6 @@ CONFIG_FILE = os.path.join(WORKING_DIR, "config.json")
 ZIP_FILE = os.path.join(WORKING_DIR, "latex.zip")
 PROJECT_UPDATES_FILE = os.path.join(WORKING_DIR, "updates.json")
 IDS_FILE = os.path.join(WORKING_DIR, "file_ids.json")
-FIRST_WORKING_COMMIT_FILE = os.path.join(WORKING_DIR, "first_working_commit")
 REMOTE_VERSION_FILE = os.path.join(WORKING_DIR, "remote_version.txt")
 
 OVERLEAF_BRANCH = "overleaf"
@@ -420,11 +419,13 @@ class OverleafProject:
                 LATEX_PROJECT_DIR,
             )
             exit(ErrorNumber.GIT_DIR_CORRUPTED_ERROR)
-        # Check if the first working commit file exists
-        if not os.path.exists(FIRST_WORKING_COMMIT_FILE):
+        # Check if both overleaf branch and working branch exist
+        branches = [_.lstrip("*").strip() for _ in _git("branch", "--list").splitlines()]
+        if not (OVERLEAF_BRANCH in branches and WORKING_BRANCH in branches):
             LOGGER.error(
-                "First working commit file `%s` does not exist. Please reinitialize the project.",
-                FIRST_WORKING_COMMIT_FILE,
+                "Branches `%s` or `%s` are missing. Working directory,  Please reinitialize the project.",
+                OVERLEAF_BRANCH,
+                WORKING_BRANCH,
             )
             exit(ErrorNumber.WKDIR_CORRUPTED_ERROR)
 
@@ -582,15 +583,8 @@ class OverleafProject:
 
     @property
     def starting_working_commit(self) -> str:
-        # The first commit ID the working branch
-        with open(FIRST_WORKING_COMMIT_FILE, "r") as f:
-            return f.read()
-
-    def _reset_working_branch(self) -> None:
-        # Reset the working branch to HEAD, after `init`, `pull`, or `push`
-        _git("switch", "-C", WORKING_BRANCH)
-        with open(FIRST_WORKING_COMMIT_FILE, "w") as f:
-            f.write(self.current_working_commit)
+        # The first commit ID where working branch forked from overleaf branch
+        return _git("merge-base", OVERLEAF_BRANCH, WORKING_BRANCH)
 
     @property
     def is_there_new_working_commit(self) -> bool:
@@ -607,14 +601,13 @@ class OverleafProject:
         self._migrate_revision_zip(updates[-1], merge_old=True)
         LOGGER.info("Migrating the rest of the revisions...")
         self._migrate_revisions_zip(updates[:-1])
-        self._reset_working_branch()
+        _git("switch", "-c", WORKING_BRANCH)
 
     def _git_repo_init_diff(self) -> None:
         LOGGER.info("Migrating all revisions...")
         _git("switch", "-c", OVERLEAF_BRANCH)
         self._migrate_revisions_diff(self.overleaf_broker.updates)
         _git("switch", "-c", WORKING_BRANCH)
-        self._reset_working_branch()
 
     @property
     def is_there_new_overleaf_rev(self) -> bool:
@@ -736,7 +729,6 @@ class OverleafProject:
 
         assert _git("diff-tree", "-r", WORKING_BRANCH, OVERLEAF_BRANCH) == ""
         _git("switch", OVERLEAF_BRANCH)
-        self._reset_working_branch()
 
 
 if __name__ == "__main__":
