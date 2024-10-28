@@ -616,6 +616,20 @@ class OverleafProject:
         assert self.remote_overleaf_rev >= self.local_overleaf_rev
         return self.remote_overleaf_rev > self.local_overleaf_rev
 
+    def _git_rebase_overleaf_working(self) -> None:
+        # Rebase working branch to overleaf branch
+        result = _git("rebase", OVERLEAF_BRANCH, WORKING_BRANCH, check=False)
+        if "CONFLICT" in result:
+            LOGGER.error(
+                "Failed to rebase `%s` to branch `%s` after pulling.\n"
+                "%s\n"
+                "Fix conflicts and run `git rebase --continue`.",
+                WORKING_BRANCH,
+                OVERLEAF_BRANCH,
+                result,
+            )
+            exit(ErrorNumber.GIT_ERROR)
+
     def pull(self, dry_run=False, _branch_switching=True, _branch_rebasing=True) -> None:
         if not self.is_there_new_remote_overleaf_rev:
             LOGGER.info("No new changes to pull.")
@@ -652,7 +666,7 @@ class OverleafProject:
             _git("switch", WORKING_BRANCH)
 
         if _branch_rebasing:
-            _git("rebase", OVERLEAF_BRANCH, WORKING_BRANCH)
+            self._git_rebase_overleaf_working()
 
     ################################################################################
 
@@ -661,11 +675,22 @@ class OverleafProject:
         return not _git("status", "--porcelain")
 
     @property
+    def is_there_no_merged_changes(self) -> bool:
+        return not _git("log", f"{WORKING_BRANCH}..{OVERLEAF_BRANCH}")
+
+    @property
     def working_branch_name_status(self) -> list[str]:
         assert _git("branch", "--show-current") == WORKING_BRANCH
         return _git("diff", "--name-status", self.starting_working_commit).splitlines()
 
-    def push(self, stash=False, force=False, dry_run=False) -> None:
+    def push(self, stash=True, pull=True, rebase=True, force=False, dry_run=False) -> None:
+        # TODO: Implement prune
+
+        def _finalize_push() -> None:
+            # Verify the push
+            assert _git("diff-tree", "-r", WORKING_BRANCH, OVERLEAF_BRANCH) == ""
+            _git("rebase", OVERLEAF_BRANCH, WORKING_BRANCH)
+
         # Check if there are new changes to push
         if not self.is_there_new_working_commit:
             LOGGER.info("No new changes to push.")
@@ -673,30 +698,40 @@ class OverleafProject:
 
         _git("switch", WORKING_BRANCH)
 
-        # Check if the working tree is clean
-        if not self.is_working_tree_clean:
-            LOGGER.error("Cannot push changes from a dirty working tree.")
+        # Perform stash before pushing to prevent uncommitted changes in working branch
+        if stash:
+            LOGGER.info(
+                "Stashing changes before pushing. Please run `git stash pop` after pushing to restore uncommitted changes."
+            )
+            _git("stash")
+        elif not self.is_working_tree_clean:
+            # Check if the working tree is clean
+            LOGGER.error(
+                "Cannot push changes from a dirty working tree. Either run without `--no-stash` or commit changes first."
+            )
             exit(ErrorNumber.PUSH_ERROR)
 
+        # Perform force push
         if force:
             LOGGER.warning("Force pushing changes to Overleaf project...")
             LOGGER.warning("Not implemented yet.")
+            _finalize_push()
             return
 
-        # Check if there are new changes in remote overleaf
-        if self.is_there_new_overleaf_rev:
+        # Perform pull before pushing to prevent new changes in remote overleaf
+        if pull:
+            self.pull(_branch_switching=True, _branch_rebasing=True)
+        elif self.is_there_new_remote_overleaf_rev:
+            # Check if there are new changes in remote overleaf
             LOGGER.error("There are new remote overleaf revisions. Please pull first.")
             exit(ErrorNumber.PUSH_ERROR)
 
-        # TODO: add option for stash first
+        # Perform rebase before pushing to prevent unmerged changes in overleaf branch
+        if rebase:
+            self._git_rebase_overleaf_working()
 
-        # Check if there are unmerged changes from the overleaf branch to the working branch
-        # TODO
-
-        LOGGER.info("Pushing changes to Overleaf project...")
-
-        upload_list: list[str] = []
         delete_list: list[str] = []
+        upload_list: list[str] = []
         for line in self.working_branch_name_status:
             LOGGER.info("status: %s", line)
             columns = line.split("\t")
@@ -722,11 +757,11 @@ class OverleafProject:
             self.overleaf_broker.delete(pathname, dry_run)
         for pathname in upload_list:
             self.overleaf_broker.upload(pathname, dry_run)
+        # It is possible that the refresh happened after changes from other remote overleaf users
+        # The push verification may fail in this case
         self.overleaf_broker.refresh_updates()
-        self.pull(dry_run=dry_run, _skip_branch_switch=True)
-
-        assert _git("diff-tree", "-r", WORKING_BRANCH, OVERLEAF_BRANCH) == ""
-        _git("switch", OVERLEAF_BRANCH)
+        self.pull(dry_run=dry_run, _branch_switching=False, _branch_rebasing=False)
+        _finalize_push()
 
 
 if __name__ == "__main__":
@@ -752,7 +787,13 @@ if __name__ == "__main__":
     pull_parser.add_argument("-d", "--dry-run", action="store_true", help="Dry run mode")
 
     push_parser = subparsers.add_parser("push", help="Push changes to Overleaf project")
-    push_parser.add_argument("-s", "--stash", action="store_true", help="Stash changes before pushing")
+    push_parser.add_argument(
+        "-s", "--stash", action="store_true", help="Stash changes in the working branch before pushing"
+    )
+    push_parser.add_argument("-P", "--no-pull", action="store_true", help="Pull remote overleaf changes before pushing")
+    push_parser.add_argument(
+        "-R", "--no-rebase", action="store_true", help="Pull remote overleaf changes before pushing"
+    )
     push_parser.add_argument("-f", "--force", action="store_true", help="Force push changes to Overleaf project")
     push_parser.add_argument("-p", "--prune", action="store_true", help="Prune empty folders")
     push_parser.add_argument("-d", "--dry-run", action="store_true", help="Dry run mode")
@@ -777,6 +818,12 @@ if __name__ == "__main__":
         case "pull":
             project.pull(dry_run=args.dry_run)
         case "push":
-            project.push(stash=args.stash, force=args.force, dry_run=args.dry_run)
+            project.push(
+                stash=args.stash,
+                pull=(not args.no_pull),
+                rebase=(not args.no_rebase),
+                force=args.force,
+                dry_run=args.dry_run,
+            )
         case _:
             parser.print_help()
