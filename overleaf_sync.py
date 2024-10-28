@@ -46,19 +46,6 @@ LOGGER_FORMATTER = logging.Formatter("[%(asctime)s] [%(levelname)s] %(message)s"
 LOG_DIR = ".overleaf-sync-logs"
 
 
-@unique
-class ErrorNumber(IntEnum):
-    OK = 0
-    NOT_INITIALIZED_ERROR = 1
-    WKDIR_CORRUPTED_ERROR = 2
-    GIT_DIR_CORRUPTED_ERROR = 3
-    HTTP_ERROR = 4
-    GIT_ERROR = 5
-    PULL_ERROR = 6
-    PUSH_ERROR = 7
-    REINITIALIZATION_ERROR = 8
-
-
 def setup_logger(logger: logging.Logger, debug: bool) -> None:
     logger.setLevel(logging.DEBUG)
     ch = logging.StreamHandler()
@@ -78,6 +65,19 @@ def setup_file_logger(logger: logging.Logger) -> None:
     logger.addHandler(fh)
 
 
+@unique
+class ErrorNumber(IntEnum):
+    OK = 0
+    NOT_INITIALIZED_ERROR = 1
+    WKDIR_CORRUPTED_ERROR = 2
+    GIT_DIR_CORRUPTED_ERROR = 3
+    HTTP_ERROR = 4
+    GIT_ERROR = 5
+    PULL_ERROR = 6
+    PUSH_ERROR = 7
+    REINITIALIZATION_ERROR = 8
+
+
 def _git(*args: str, check=True) -> str:
     cmd = ["git", "-C", LATEX_PROJECT_DIR, *args]
     LOGGER.debug("Git command: %s", " ".join(cmd))
@@ -88,15 +88,6 @@ def _git(*args: str, check=True) -> str:
         exit(ErrorNumber.GIT_ERROR)
     LOGGER.debug("Git output: \n%s", output)
     return output
-
-
-def _sleep_until(ts: float) -> None:
-    now = time()
-    time_to_sleep = ts - now
-    LOGGER.debug("Sleeping for %.3f seconds...", time_to_sleep)
-
-    if time_to_sleep > 0:
-        sleep(time_to_sleep)
 
 
 class OverleafBroker:
@@ -245,17 +236,17 @@ class OverleafBroker:
             raise ValueError("Failed to fetch root folder ID.")
         return self._root_folder_id
 
-    def upload(self, file_path: str, dry_run=False) -> None:
+    def upload(self, pathname: str, dry_run=False) -> None:
         """
         Upload the file to the Overleaf project.
         There is a rate limit of 200 request per 15 minutes.
         """
-        LOGGER.info("Uploading %s...", file_path)
+        LOGGER.info("Uploading %s...", pathname)
         if dry_run:
             return
 
-        relative_path = "null" if not os.path.dirname(file_path) else file_path
-        file_name = os.path.basename(file_path)
+        relative_path = "null" if not os.path.dirname(pathname) else pathname
+        file_name = os.path.basename(pathname)
 
         url = f"{PROJECTS_URL}/{self._project_id}/upload"
         headers = {
@@ -266,7 +257,7 @@ class OverleafBroker:
         }
         params = {"folder_id": self.root_folder_id}
         data = {"relativePath": f"{relative_path}", "name": file_name, "type": "application/octet-stream"}
-        qqfile = open(os.path.join(LATEX_PROJECT_DIR, file_path), "rb")
+        qqfile = open(os.path.join(LATEX_PROJECT_DIR, pathname), "rb")
         files = {"qqfile": (file_name, qqfile, "application/octet-stream")}
         response = self._session.post(url, headers=headers, params=params, data=data, files=files)
         qqfile.close()
@@ -489,6 +480,14 @@ class OverleafProject:
         Migrate all the given revisions to git revisions.
         Note that this function is not responsible for switching branch.
         """
+
+        def _sleep_until(ts: float) -> None:
+            now = time()
+            time_to_sleep = ts - now
+            LOGGER.debug("Sleeping for %.3f seconds...", time_to_sleep)
+            if time_to_sleep > 0:
+                sleep(time_to_sleep)
+
         revision_length = len(revisions)
         for i, rev in enumerate(reversed(revisions)):
             LOGGER.info("%d revision(s) to be migrated (ZIP).", revision_length - i)
