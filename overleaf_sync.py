@@ -26,7 +26,6 @@ from bs4 import BeautifulSoup
 
 
 OVERLEAF_URL = "https://overleaf.s3lab.io"
-LOGIN_URL = f"{OVERLEAF_URL}/login"
 PROJECTS_URL = f"{OVERLEAF_URL}/project"
 
 WORKING_DIR_NAME = ".overleaf-sync"
@@ -91,6 +90,8 @@ def _git(*args: str, check=True) -> str:
 
 
 class OverleafBroker:
+    LOGIN_URL = f"{OVERLEAF_URL}/login"
+
     def __init__(self, username: str, password: str, project_id: str) -> None:
         self._session = requests.Session()
         self._session.headers.update(
@@ -111,11 +112,13 @@ class OverleafBroker:
         self._root_folder_id: str | None = None
         self._indexed_file_ids: dict[str, dict[str, str]] | None = None
 
+        self.login()
+
     def login(self) -> None:
         if self._logged_in:
             return
         LOGGER.info("Logging in to Overleaf...")
-        response = self._session.get(LOGIN_URL)
+        response = self._session.get(self.LOGIN_URL)
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
         csrf_token: str
@@ -123,7 +126,7 @@ class OverleafBroker:
         if not csrf_token:
             raise ValueError("Failed to fetch CSRF token.")
         payload = {"email": self._username, "password": self._password, "_csrf": csrf_token}
-        response = self._session.post(LOGIN_URL, data=payload)
+        response = self._session.post(self.LOGIN_URL, data=payload)
         response.raise_for_status()
         self._logged_in = True
         LOGGER.info("Login successful.")
@@ -376,7 +379,6 @@ class OverleafProject:
             _git("init", "-b", OVERLEAF_BRANCH)
             # Initialize Overleaf broker
             self.overleaf_broker = OverleafBroker(username, password, project_id)
-            self.overleaf_broker.login()
             # Migration of revisions
             # self._git_repo_init_zip(n_revisions)
             self._git_repo_init_diff()
@@ -390,7 +392,6 @@ class OverleafProject:
         with open(CONFIG_FILE, "r") as config_file:
             config: dict[str, str] = json.load(config_file)
         self.overleaf_broker = OverleafBroker(config["username"], config["password"], config["project_id"])
-        self.overleaf_broker.login()
 
     def _sanity_check(self) -> None:
         LOGGER.info("Performing sanity checks...")
