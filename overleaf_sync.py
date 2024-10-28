@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import argparse
 import logging
@@ -88,6 +89,51 @@ def _git(*args: str, check=True) -> str:
     LOGGER.debug("Git output: \n%s", output)
     return output
 
+
+class GitBroker:
+    def __init__(self, working_dir, overleaf_branch="overleaf", working_branch="working") -> None:
+        self.working_dir = working_dir
+        self.overleaf_branch = overleaf_branch
+        self.working_branch = working_branch
+
+    def __call__(self, *args: str, check=True) -> str:
+        cmd = ["git", "-C", self.working_dir, *args]
+        LOGGER.debug("Git command: %s", " ".join(cmd))
+        try:
+            output = subprocess.run(cmd, capture_output=True, text=True, check=check).stdout.strip()
+        except subprocess.CalledProcessError as e:
+            LOGGER.error("Git command failed: %s\noutput:\n%s", e, e.output)
+            exit(ErrorNumber.GIT_ERROR)
+        LOGGER.debug("Git output: \n%s", output)
+        return output
+
+    def init(self, force=False) -> None:
+        if os.path.exists(os.path.join(self.working_dir, ".git")):
+            if force:
+                LOGGER.warning("Reinitializing git repository in %s...", self.working_dir)
+                shutil.rmtree(os.path.join(self.working_dir, ".git"))
+            else:
+                LOGGER.error("Git repository already exists in %s. Exiting...", WORKING_DIR)
+                exit(ErrorNumber.REINITIALIZATION_ERROR)
+        self("init", "-b", self.working_branch)
+
+    def sanity_check(self) -> None:
+        # Check if git repository is initialized
+        if not os.path.exists(os.path.join(WORKING_DIR, ".git")):
+            LOGGER.error(
+                "Git is not initialized for LaTeX project in directory `%s`. Please reinitialize the project.",
+                WORKING_DIR,
+            )
+            exit(ErrorNumber.GIT_DIR_CORRUPTED_ERROR)
+        # Check if both overleaf branch and working branch exist
+        branches = [_.lstrip("*").strip() for _ in _git("branch", "--list").splitlines()]
+        if not (OVERLEAF_BRANCH in branches and WORKING_BRANCH in branches):
+            LOGGER.error(
+                "Branches `%s` or `%s` are missing. Working directory,  Please reinitialize the project.",
+                OVERLEAF_BRANCH,
+                WORKING_BRANCH,
+            )
+            exit(ErrorNumber.WKDIR_CORRUPTED_ERROR)
 
 
 class OverleafBroker:
@@ -365,82 +411,26 @@ class OverleafBroker:
 
 
 class OverleafProject:
-    def __init__(
-        self,
-        init: bool = False,
-        username: str | None = None,
-        password: str | None = None,
-        project_id: str | None = None,
-        # n_revisions: int = 3,
-    ) -> None:
-        # Do initialization
-        if init:
-            if not (username and password and project_id):
-                LOGGER.error("Missing required arguments for initialization.")
-                exit(ErrorNumber.NOT_INITIALIZED_ERROR)
-            # Create working directory
-            LOGGER.info("Initializing working directory...")
-            os.makedirs(OVERLEAF_SYNC_DIR, exist_ok=True)
-            # Write `config.json`
-            if os.path.exists(CONFIG_FILE):
-                LOGGER.warning("Overwriting config file `%s`...", CONFIG_FILE)
-            else:
-                LOGGER.info("Saving config file to %s.", CONFIG_FILE)
-            with open(CONFIG_FILE, "w") as f:
-                json.dump({"username": username, "password": password, "project_id": project_id}, f)
-            # Write `.gitignore`
-            with open(os.path.join(OVERLEAF_SYNC_DIR, ".gitignore"), "w") as f:
-                f.write("*")
-            # Initialize git repository
-            if os.path.exists(os.path.join(WORKING_DIR, ".git")):
-                LOGGER.error("Git repository already exists in %s. Exiting...", WORKING_DIR)
-                exit(ErrorNumber.REINITIALIZATION_ERROR)
-            LOGGER.info("Initializing git repository in %s...", WORKING_DIR)
-            _git("init", "-b", OVERLEAF_BRANCH)
-            # Initialize Overleaf broker
-            self.overleaf_broker = OverleafBroker(username, password, project_id)
-            # Migration of revisions
-            # self._git_repo_init_zip(n_revisions)
-            self._git_repo_init_diff()
-            # Sanity checks
-            self._sanity_check()
-            exit(ErrorNumber.OK.value)
+    def __init__(self) -> None:
+        self.overleaf_sync_dir = os.path.join(os.getcwd(), OVERLEAF_SYNC_DIR_NAME)
+        self.config_file = os.path.join(self.overleaf_sync_dir, "config.json")
+        self.working_dir = os.path.abspath(os.path.join(self.overleaf_sync_dir, ".."))
 
-        # Sanity checks
-        self._sanity_check()
-        # Initialize Overleaf broker
-        with open(CONFIG_FILE, "r") as config_file:
-            config: dict[str, str] = json.load(config_file)
-        self.overleaf_broker = OverleafBroker(config["username"], config["password"], config["project_id"])
+        # Initialize git broker
+        self.git_broker = GitBroker(self.working_dir)
+        # Initialize overleaf broker
+        self.overleaf_broker = OverleafBroker()
+        if not os.path.exists(self.config_file):
+            return
 
-    def _sanity_check(self) -> None:
-        LOGGER.info("Performing sanity checks...")
-        # Check if working directory exists
-        if not os.path.exists(OVERLEAF_SYNC_DIR):
-            LOGGER.error(
-                "Overleaf sync directory `%s` does not exist. Please run `init` command first.", OVERLEAF_SYNC_DIR_NAME
-            )
-            exit(ErrorNumber.NOT_INITIALIZED_ERROR)
-        # Check if configuration file exists
-        if not os.path.exists(CONFIG_FILE):
-            LOGGER.error("Configuration file `%s` does not exist. Please reinitialize the project.", CONFIG_FILE)
-            exit(ErrorNumber.WKDIR_CORRUPTED_ERROR)
-        # Check if git repository is initialized
-        if not os.path.exists(os.path.join(WORKING_DIR, ".git")):
-            LOGGER.error(
-                "Git is not initialized for LaTeX project in directory `%s`. Please reinitialize the project.",
-                WORKING_DIR,
-            )
-            exit(ErrorNumber.GIT_DIR_CORRUPTED_ERROR)
-        # Check if both overleaf branch and working branch exist
-        branches = [_.lstrip("*").strip() for _ in _git("branch", "--list").splitlines()]
-        if not (OVERLEAF_BRANCH in branches and WORKING_BRANCH in branches):
-            LOGGER.error(
-                "Branches `%s` or `%s` are missing. Working directory,  Please reinitialize the project.",
-                OVERLEAF_BRANCH,
-                WORKING_BRANCH,
-            )
-            exit(ErrorNumber.WKDIR_CORRUPTED_ERROR)
+        self.sanity_check()
+        with open(self.config_file, "r") as f:
+            config: dict[str, str] = json.load(f)
+        self.overleaf_broker.login(config["username"], config["password"], config["project_id"])
+
+    def sanity_check(self) -> None:
+        # git repo
+        self.git_broker.sanity_check()
 
     @property
     def managed_files(self) -> list[str]:
@@ -630,6 +620,28 @@ class OverleafProject:
         self._migrate_revisions_diff(self.overleaf_broker.updates)
         _git("switch", "-c", WORKING_BRANCH)
 
+    def init(self, username: str, password: str, project_id: str):
+        LOGGER.info("Initializing working directory...")
+        # Create overleaf-sync directory
+        os.makedirs(OVERLEAF_SYNC_DIR, exist_ok=True)
+        # Write `config.json`
+        if os.path.exists(CONFIG_FILE):
+            LOGGER.warning("Overwriting config file `%s`...", CONFIG_FILE)
+        else:
+            LOGGER.info("Saving config file to %s.", CONFIG_FILE)
+        with open(CONFIG_FILE, "w") as f:
+            json.dump({"username": username, "password": password, "project_id": project_id}, f)
+        # Write `.gitignore`
+        with open(os.path.join(OVERLEAF_SYNC_DIR, ".gitignore"), "w") as f:
+            f.write("*")
+        # Initialize git repo
+        self.git_broker.init()
+        # login overleaf broker
+        self.overleaf_broker.login(username, password, project_id)
+        # Migrate overleaf revisions to git repo
+        # self._git_repo_init_zip(n_revisions)
+        self._git_repo_init_diff()
+
     @property
     def is_there_new_remote_overleaf_rev(self) -> bool:
         LOGGER.info("Fetched remote/local overleaf revision: %d/%d", self.remote_overleaf_rev, self.local_overleaf_rev)
@@ -795,13 +807,6 @@ if __name__ == "__main__":
     init_parser.add_argument("-u", "--username", required=True, help="Overleaf username")
     init_parser.add_argument("-p", "--password", required=True, help="Overleaf password")
     init_parser.add_argument("-i", "--project-id", required=True, help="Overleaf project ID")
-    # init_parser.add_argument(
-    #     "-r",
-    #     "--revision",
-    #     type=int,
-    #     default=3,
-    #     help="Fetch the most recent N revisions, when N > 30, it will sleep for 2 minutes after each download. N <= 0 means all revisions.",
-    # )
 
     pull_parser = subparsers.add_parser("pull", help="Pull changes from Overleaf project")
     pull_parser.add_argument("-d", "--dry-run", action="store_true", help="Dry run mode")
@@ -824,17 +829,11 @@ if __name__ == "__main__":
     if args.log:
         setup_file_logger(LOGGER)
 
-    if args.command == "init":
-        project = OverleafProject(
-            init=True,
-            username=args.username,
-            password=args.password,
-            project_id=args.project_id,
-        )
-    else:
-        project = OverleafProject()
+    project = OverleafProject()
 
     match args.command:
+        case "init":
+            project.init(username=args.username, password=args.password, project_id=args.project_id)
         case "pull":
             project.pull(dry_run=args.dry_run)
         case "push":
