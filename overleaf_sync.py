@@ -26,6 +26,7 @@ from bs4 import BeautifulSoup
 
 
 OVERLEAF_URL = "https://overleaf.s3lab.io"
+LOGIN_URL = f"{OVERLEAF_URL}/login"
 PROJECTS_URL = f"{OVERLEAF_URL}/project"
 
 OVERLEAF_SYNC_DIR_NAME = ".overleaf-sync"
@@ -88,10 +89,9 @@ def _git(*args: str, check=True) -> str:
     return output
 
 
-class OverleafBroker:
-    LOGIN_URL = f"{OVERLEAF_URL}/login"
 
-    def __init__(self, username: str, password: str, project_id: str) -> None:
+class OverleafBroker:
+    def __init__(self) -> None:
         self._session = requests.Session()
         self._session.headers.update(
             {
@@ -100,10 +100,10 @@ class OverleafBroker:
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36 Edg/129.0.0.0",
             }
         )
-        self._username = username
-        self._password = password
-        self._project_id = project_id
-        self._project_url = f"{PROJECTS_URL}/{self._project_id}"
+        self.username: str | None = None
+        self.password: str | None = None
+        self.project_id: str | None = None
+        self.project_url = f"{PROJECTS_URL}/{self.project_id}"
         self._logged_in = False
         self._updates: list[dict] | None = None
         self._csrf_token: str | None = None
@@ -111,21 +111,45 @@ class OverleafBroker:
         self._root_folder_id: str | None = None
         self._indexed_file_ids: dict[str, dict[str, str]] | None = None
 
-        self.login()
+    def _get(self, url: str, headers=None) -> requests.Response:
+        if not self._logged_in:
+            LOGGER.error("Not logged in. Please login first.")
+        response = self._session.get(url, headers=headers)
+        response.raise_for_status()
+        return response
 
-    def login(self) -> None:
+    def _post(self, url: str, headers=None, params=None, data=None, files=None) -> requests.Response:
+        if not self._logged_in:
+            LOGGER.error("Not logged in. Please login first.")
+        response = self._session.post(url, headers=None, params=None, data=None, files=None)
+        response.raise_for_status()
+        return response
+
+    def _delete(self, url: str, headers=None) -> requests.Response:
+        if not self._logged_in:
+            LOGGER.error("Not logged in. Please login first.")
+        response = self._session.delete(url, headers=headers)
+        response.raise_for_status()
+        return response
+
+    def login(self, username: str | None = None, password: str | None = None, project_id: str | None = None) -> None:
         if self._logged_in:
             return
+
+        self.username = username
+        self.password = password
+        self.project_id = project_id
+
         LOGGER.info("Logging in to Overleaf...")
-        response = self._session.get(self.LOGIN_URL)
+        response = self._session.get(LOGIN_URL)
         response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
         csrf_token: str
         csrf_token = soup.find("input", {"name": "_csrf"})["value"]  # type: ignore
         if not csrf_token:
             raise ValueError("Failed to fetch CSRF token.")
-        payload = {"email": self._username, "password": self._password, "_csrf": csrf_token}
-        response = self._session.post(self.LOGIN_URL, data=payload)
+        payload = {"email": self.username, "password": self.password, "_csrf": csrf_token}
+        response = self._session.post(LOGIN_URL, data=payload)
         response.raise_for_status()
         self._logged_in = True
         LOGGER.info("Login successful.")
@@ -135,13 +159,12 @@ class OverleafBroker:
         if self._updates:
             return self._updates
 
-        url = f"{PROJECTS_URL}/{self._project_id}/updates"
+        url = f"{PROJECTS_URL}/{self.project_id}/updates"
         headers = {
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
         }
         LOGGER.debug("Fetching project updates from %s...", url)
-        response = self._session.get(url, headers=headers)
-        response.raise_for_status()
+        response = self._get(url, headers)
         self._updates = json.loads(response.text)["updates"]
         if not self._updates:
             raise ValueError("Failed to fetch project updates.")
@@ -157,11 +180,10 @@ class OverleafBroker:
         Download the project/revision ZIP file from Overleaf.
         There is a rate limit of 30 request per hour when downloading revision ZIP.
         """
-        url = f"{self._project_url}/version/{revision}/zip" if revision else f"{self._project_url}/download/zip"
+        url = f"{self.project_url}/version/{revision}/zip" if revision else f"{self.project_url}/download/zip"
         LOGGER.debug("Downloading project ZIP from url: %s...", url)
-        response = self._session.get(url)
+        response = self._get(url)
         ts = time()
-        response.raise_for_status()
         with open(ZIP_FILE, "wb") as f:
             f.write(response.content)
         LOGGER.debug("Project ZIP downloaded as %s", ZIP_FILE)
@@ -171,7 +193,7 @@ class OverleafBroker:
     def csrf_token(self) -> str:
         if self._csrf_token:
             return self._csrf_token
-        response = self._session.get(self._project_url)
+        response = self._get(self.project_url)
         soup = BeautifulSoup(response.text, "html.parser")
         self._csrf_token = soup.find("meta", {"name": "ol-csrfToken"})["content"]  # type: ignore
         if not self._csrf_token:
@@ -180,25 +202,24 @@ class OverleafBroker:
 
     def filetree_diff(self, from_: int, to_: int) -> list[dict]:
         LOGGER.debug("Fetching filetree diff from %d to %d...", from_, to_)
-        url = f"{PROJECTS_URL}/{self._project_id}/filetree/diff?from={from_}&to={to_}"
+        url = f"{PROJECTS_URL}/{self.project_id}/filetree/diff?from={from_}&to={to_}"
         headers = {
             "Accept": "application/json",
-            "Referer": self._project_url,
+            "Referer": self.project_url,
             "X-CSRF-TOKEN": self.csrf_token,
         }
-        response = self._session.get(url, headers=headers)
-        response.raise_for_status()
+        response = self._get(url, headers=headers)
         return json.loads(response.text)["diff"]
 
     def diff(self, from_: int, to_: int, pathname: str) -> list[dict]:
         LOGGER.debug("Fetching diff of file %s from %d to %d...", pathname, from_, to_)
-        url = f"{PROJECTS_URL}/{self._project_id}/diff?from={from_}&to={to_}&pathname={pathname}"
+        url = f"{PROJECTS_URL}/{self.project_id}/diff?from={from_}&to={to_}&pathname={pathname}"
         headers = {
             "Accept": "application/json",
-            "Referer": self._project_url,
+            "Referer": self.project_url,
             "X-CSRF-TOKEN": self.csrf_token,
         }
-        response = self._session.get(url, headers=headers)
+        response = self._get(url, headers=headers)
         response.raise_for_status()
         return json.loads(response.text)["diff"]
 
@@ -207,11 +228,11 @@ class OverleafBroker:
         if self._original_file_ids:
             return self._original_file_ids
 
-        LOGGER.debug("Fetching document IDs from Overleaf project %s...", self._project_id)
-        response = self._session.get(f"{OVERLEAF_URL}/socket.io/1/?projectId={self._project_id}")
+        LOGGER.debug("Fetching document IDs from Overleaf project %s...", self.project_id)
+        response = self._get(f"{OVERLEAF_URL}/socket.io/1/?projectId={self.project_id}")
         ws_id = response.text.split(":")[0]
         ws = websocket.create_connection(
-            f"wss://overleaf.s3lab.io/socket.io/1/websocket/{ws_id}?projectId={self._project_id}"
+            f"wss://overleaf.s3lab.io/socket.io/1/websocket/{ws_id}?projectId={self.project_id}"
         )
         data: str
         while True:
@@ -250,18 +271,18 @@ class OverleafBroker:
         relative_path = "null" if not os.path.dirname(pathname) else pathname
         file_name = os.path.basename(pathname)
 
-        url = f"{PROJECTS_URL}/{self._project_id}/upload"
+        url = f"{PROJECTS_URL}/{self.project_id}/upload"
         headers = {
             "Accept": "*/*",
             "Origin": OVERLEAF_URL,
-            "Referer": self._project_url,
+            "Referer": self.project_url,
             "X-CSRF-TOKEN": self.csrf_token,
         }
         params = {"folder_id": self.root_folder_id}
         data = {"relativePath": f"{relative_path}", "name": file_name, "type": "application/octet-stream"}
         qqfile = open(os.path.join(WORKING_DIR, pathname), "rb")
         files = {"qqfile": (file_name, qqfile, "application/octet-stream")}
-        response = self._session.post(url, headers=headers, params=params, data=data, files=files)
+        response = self._post(url, headers=headers, params=params, data=data, files=files)
         qqfile.close()
         response.raise_for_status()
 
@@ -306,15 +327,15 @@ class OverleafBroker:
         parent_folder_id, type = self._find_id_type(os.path.dirname(path))
         assert type == "folder"
 
-        url = f"{self._project_url}/folder"
+        url = f"{self.project_url}/folder"
         headers = {
             "Accept": "application/json",
             "Origin": OVERLEAF_URL,
-            "Referer": self._project_url,
+            "Referer": self.project_url,
             "X-CSRF-TOKEN": self.csrf_token,
         }
         data = {"name": os.path.basename(path), "parent_folder_id": parent_folder_id}
-        response = self._session.post(url, headers=headers, data=data)
+        response = self._post(url, headers=headers, data=data)
         response.raise_for_status()
 
     def delete(self, path: str, dry_run=False) -> None:
@@ -330,16 +351,16 @@ class OverleafBroker:
         if dry_run:
             return
 
-        url = f"{self._project_url}/{type}/{id}"
+        url = f"{self.project_url}/{type}/{id}"
         headers = {
             "Accept": "application/json",
             "Origin": OVERLEAF_URL,
-            "Referer": self._project_url,
+            "Referer": self.project_url,
             "X-CSRF-TOKEN": self.csrf_token,
         }
         if type not in ["file", "doc", "folder"]:
             raise ValueError(f"Invalid type: {type}")
-        response = self._session.delete(url, headers=headers)
+        response = self._delete(url, headers=headers)
         response.raise_for_status()
 
 
