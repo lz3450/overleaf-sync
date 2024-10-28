@@ -78,13 +78,13 @@ def setup_file_logger(logger: logging.Logger) -> None:
     logger.addHandler(fh)
 
 
-def _git(*args: str) -> str:
+def _git(*args: str, check=True) -> str:
     cmd = ["git", "-C", LATEX_PROJECT_DIR, *args]
     LOGGER.debug("Git command: %s", " ".join(cmd))
     try:
-        output = subprocess.run(cmd, capture_output=True, text=True, check=True).stdout.strip()
+        output = subprocess.run(cmd, capture_output=True, text=True, check=check).stdout.strip()
     except subprocess.CalledProcessError as e:
-        LOGGER.error("Git command failed: %s\noutput: %s", e, e.output)
+        LOGGER.error("Git command failed: %s\noutput:\n%s", e, e.output)
         exit(ErrorNumber.GIT_ERROR)
     LOGGER.debug("Git output: \n%s", output)
     return output
