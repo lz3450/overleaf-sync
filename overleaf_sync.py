@@ -611,13 +611,13 @@ class OverleafProject:
         _git("switch", "-c", WORKING_BRANCH)
 
     @property
-    def is_there_new_overleaf_rev(self) -> bool:
+    def is_there_new_remote_overleaf_rev(self) -> bool:
         LOGGER.info("Fetched remote/local overleaf revision: %d/%d", self.remote_overleaf_rev, self.local_overleaf_rev)
         assert self.remote_overleaf_rev >= self.local_overleaf_rev
         return self.remote_overleaf_rev > self.local_overleaf_rev
 
     def pull(self, dry_run=False, _branch_switching=True, _branch_rebasing=True) -> None:
-        if not self.is_there_new_overleaf_rev:
+        if not self.is_there_new_remote_overleaf_rev:
             LOGGER.info("No new changes to pull.")
             return
         LOGGER.info("Pulling changes from Overleaf project...")
