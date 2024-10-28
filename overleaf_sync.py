@@ -28,14 +28,13 @@ from bs4 import BeautifulSoup
 OVERLEAF_URL = "https://overleaf.s3lab.io"
 PROJECTS_URL = f"{OVERLEAF_URL}/project"
 
-WORKING_DIR_NAME = ".overleaf-sync"
-WORKING_DIR = os.path.join(os.getcwd(), WORKING_DIR_NAME)
-LATEX_PROJECT_DIR = os.path.abspath(os.path.join(WORKING_DIR, ".."))
-CONFIG_FILE = os.path.join(WORKING_DIR, "config.json")
-ZIP_FILE = os.path.join(WORKING_DIR, "latex.zip")
-PROJECT_UPDATES_FILE = os.path.join(WORKING_DIR, "updates.json")
-IDS_FILE = os.path.join(WORKING_DIR, "file_ids.json")
-REMOTE_VERSION_FILE = os.path.join(WORKING_DIR, "remote_version.txt")
+OVERLEAF_SYNC_DIR_NAME = ".overleaf-sync"
+OVERLEAF_SYNC_DIR = os.path.join(os.getcwd(), OVERLEAF_SYNC_DIR_NAME)
+WORKING_DIR = os.path.abspath(os.path.join(OVERLEAF_SYNC_DIR, ".."))
+CONFIG_FILE = os.path.join(OVERLEAF_SYNC_DIR, "config.json")
+ZIP_FILE = os.path.join(OVERLEAF_SYNC_DIR, "latex.zip")
+PROJECT_UPDATES_FILE = os.path.join(OVERLEAF_SYNC_DIR, "updates.json")
+IDS_FILE = os.path.join(OVERLEAF_SYNC_DIR, "file_ids.json")
 
 OVERLEAF_BRANCH = "overleaf"
 WORKING_BRANCH = "working"
@@ -78,7 +77,7 @@ class ErrorNumber(IntEnum):
 
 
 def _git(*args: str, check=True) -> str:
-    cmd = ["git", "-C", LATEX_PROJECT_DIR, *args]
+    cmd = ["git", "-C", WORKING_DIR, *args]
     LOGGER.debug("Git command: %s", " ".join(cmd))
     try:
         output = subprocess.run(cmd, capture_output=True, text=True, check=check).stdout.strip()
@@ -260,7 +259,7 @@ class OverleafBroker:
         }
         params = {"folder_id": self.root_folder_id}
         data = {"relativePath": f"{relative_path}", "name": file_name, "type": "application/octet-stream"}
-        qqfile = open(os.path.join(LATEX_PROJECT_DIR, pathname), "rb")
+        qqfile = open(os.path.join(WORKING_DIR, pathname), "rb")
         files = {"qqfile": (file_name, qqfile, "application/octet-stream")}
         response = self._session.post(url, headers=headers, params=params, data=data, files=files)
         qqfile.close()
@@ -360,7 +359,7 @@ class OverleafProject:
                 exit(ErrorNumber.NOT_INITIALIZED_ERROR)
             # Create working directory
             LOGGER.info("Initializing working directory...")
-            os.makedirs(WORKING_DIR, exist_ok=True)
+            os.makedirs(OVERLEAF_SYNC_DIR, exist_ok=True)
             # Write `config.json`
             if os.path.exists(CONFIG_FILE):
                 LOGGER.warning("Overwriting config file `%s`...", CONFIG_FILE)
@@ -369,13 +368,13 @@ class OverleafProject:
             with open(CONFIG_FILE, "w") as f:
                 json.dump({"username": username, "password": password, "project_id": project_id}, f)
             # Write `.gitignore`
-            with open(os.path.join(WORKING_DIR, ".gitignore"), "w") as f:
+            with open(os.path.join(OVERLEAF_SYNC_DIR, ".gitignore"), "w") as f:
                 f.write("*")
             # Initialize git repository
-            if os.path.exists(os.path.join(LATEX_PROJECT_DIR, ".git")):
-                LOGGER.error("Git repository already exists in %s. Exiting...", LATEX_PROJECT_DIR)
+            if os.path.exists(os.path.join(WORKING_DIR, ".git")):
+                LOGGER.error("Git repository already exists in %s. Exiting...", WORKING_DIR)
                 exit(ErrorNumber.REINITIALIZATION_ERROR)
-            LOGGER.info("Initializing git repository in %s...", LATEX_PROJECT_DIR)
+            LOGGER.info("Initializing git repository in %s...", WORKING_DIR)
             _git("init", "-b", OVERLEAF_BRANCH)
             # Initialize Overleaf broker
             self.overleaf_broker = OverleafBroker(username, password, project_id)
@@ -396,9 +395,9 @@ class OverleafProject:
     def _sanity_check(self) -> None:
         LOGGER.info("Performing sanity checks...")
         # Check if working directory exists
-        if not os.path.exists(WORKING_DIR):
+        if not os.path.exists(OVERLEAF_SYNC_DIR):
             LOGGER.error(
-                "Overleaf sync directory `%s` does not exist. Please run `init` command first.", WORKING_DIR_NAME
+                "Overleaf sync directory `%s` does not exist. Please run `init` command first.", OVERLEAF_SYNC_DIR_NAME
             )
             exit(ErrorNumber.NOT_INITIALIZED_ERROR)
         # Check if configuration file exists
@@ -406,10 +405,10 @@ class OverleafProject:
             LOGGER.error("Configuration file `%s` does not exist. Please reinitialize the project.", CONFIG_FILE)
             exit(ErrorNumber.WKDIR_CORRUPTED_ERROR)
         # Check if git repository is initialized
-        if not os.path.exists(os.path.join(LATEX_PROJECT_DIR, ".git")):
+        if not os.path.exists(os.path.join(WORKING_DIR, ".git")):
             LOGGER.error(
                 "Git is not initialized for LaTeX project in directory `%s`. Please reinitialize the project.",
-                LATEX_PROJECT_DIR,
+                WORKING_DIR,
             )
             exit(ErrorNumber.GIT_DIR_CORRUPTED_ERROR)
         # Check if both overleaf branch and working branch exist
@@ -431,21 +430,21 @@ class OverleafProject:
         Unzip the downloaded ZIP file to the LaTeX project directory.
         `file_list`: List of files to extract. If `None`, extract all files.
         """
-        LOGGER.debug("Unzipping file %s to directory %s...", zip_file, LATEX_PROJECT_DIR)
+        LOGGER.debug("Unzipping file %s to directory %s...", zip_file, WORKING_DIR)
         with zipfile.ZipFile(zip_file, "r") as zip_ref:
             if file_list:
                 # TODO: not tested
                 for file in zip_ref.filelist:
                     LOGGER.debug("Extracting %s...", file)
-                    zip_ref.extract(file, LATEX_PROJECT_DIR)
+                    zip_ref.extract(file, WORKING_DIR)
             else:
-                zip_ref.extractall(LATEX_PROJECT_DIR)
+                zip_ref.extractall(WORKING_DIR)
             # Delete files not in the ZIP file
             zip_filenames = {zip_info.filename for zip_info in zip_ref.filelist}
             for managed_file in self.managed_files:
                 if managed_file and managed_file not in zip_filenames:
                     LOGGER.info("Deleting file %s from filesystem...", managed_file)
-                    os.remove(os.path.join(LATEX_PROJECT_DIR, managed_file))
+                    os.remove(os.path.join(WORKING_DIR, managed_file))
 
     def _migrate_revision_zip(self, revision: dict, merge_old: bool = False) -> float:
         """
@@ -526,7 +525,7 @@ class OverleafProject:
             return content
 
         def _migrate(operation: str, pathname: str, diff: list[dict]) -> None:
-            path = os.path.join(LATEX_PROJECT_DIR, pathname)
+            path = os.path.join(WORKING_DIR, pathname)
             match operation:
                 case "added" | "edited":
                     LOGGER.debug("Adding/Editing %s...", item["pathname"])
@@ -536,7 +535,7 @@ class OverleafProject:
                 case "removed":
                     os.remove(path)
                 case "renamed":
-                    os.rename(path, os.path.join(LATEX_PROJECT_DIR, item["newPathname"]))
+                    os.rename(path, os.path.join(WORKING_DIR, item["newPathname"]))
                 case _:
                     raise ValueError(f"Unsupported operation: {item['operation']}")
 
