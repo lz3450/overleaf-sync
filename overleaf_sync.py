@@ -78,18 +78,6 @@ class ErrorNumber(IntEnum):
     REINITIALIZATION_ERROR = 8
 
 
-def _git(*args: str, check=True) -> str:
-    cmd = ["git", "-C", WORKING_DIR, *args]
-    LOGGER.debug("Git command: %s", " ".join(cmd))
-    try:
-        output = subprocess.run(cmd, capture_output=True, text=True, check=check).stdout.strip()
-    except subprocess.CalledProcessError as e:
-        LOGGER.error("Git command failed: %s\noutput:\n%s", e, e.output)
-        exit(ErrorNumber.GIT_ERROR)
-    LOGGER.debug("Git output: \n%s", output)
-    return output
-
-
 class GitBroker:
     def __init__(self, working_dir, overleaf_branch="overleaf", working_branch="working") -> None:
         self.working_dir = working_dir
@@ -126,14 +114,89 @@ class GitBroker:
             )
             exit(ErrorNumber.GIT_DIR_CORRUPTED_ERROR)
         # Check if both overleaf branch and working branch exist
-        branches = [_.lstrip("*").strip() for _ in _git("branch", "--list").splitlines()]
-        if not (OVERLEAF_BRANCH in branches and WORKING_BRANCH in branches):
+        branches = [_.lstrip("*").strip() for _ in self("branch", "--list").splitlines()]
+        if not (self.overleaf_branch in branches and self.working_branch in branches):
             LOGGER.error(
                 "Branches `%s` or `%s` are missing. Working directory,  Please reinitialize the project.",
-                OVERLEAF_BRANCH,
-                WORKING_BRANCH,
+                self.overleaf_branch,
+                self.working_branch,
             )
             exit(ErrorNumber.WKDIR_CORRUPTED_ERROR)
+
+    @property
+    def managed_files(self) -> list[str]:
+        return self("ls-files").splitlines()
+
+    def add_all(self) -> None:
+        self("add", ".")
+
+    def commit(self, msg: str, ts: int, name: str, email: str) -> None:
+        self(
+            "commit",
+            f"--date=@{ts}",
+            f"--author={name} <{email}>",
+            "-m",
+            msg,
+        )
+
+    @property
+    def starting_working_commit(self) -> str:
+        # The first commit ID where working branch forked from overleaf branch
+        return self("merge-base", self.overleaf_branch, self.overleaf_branch)
+
+    @property
+    def current_working_commit(self) -> str:
+        return self("rev-parse", self.working_branch)
+
+    def switch_to_overleaf_branch(self) -> None:
+        self("switch", self.overleaf_branch)
+
+    def switch_to_working_branch(self) -> None:
+        self("switch", self.working_branch)
+
+    @property
+    def local_overleaf_rev(self) -> int:
+        return int(self("log", "-1", "--pretty=%B", self.overleaf_branch).split("->")[1])
+
+    def reset_hard(self, n: int) -> None:
+        self("reset", "--hard", f"HEAD~{n}")
+
+    def rebase_working_branch(self) -> None:
+        # Rebase working branch to overleaf branch
+        result = self("rebase", self.overleaf_branch, self.working_branch, check=False)
+        if "CONFLICT" in result:
+            LOGGER.error(
+                "Failed to rebase `%s` to branch `%s`.\n" "%s\n" "Fix conflicts and run `git rebase --continue`.",
+                self.working_branch,
+                self.overleaf_branch,
+                result,
+            )
+            exit(ErrorNumber.GIT_ERROR)
+
+    @property
+    def is_current_branch_clean(self) -> bool:
+        return not self("status", "--porcelain")
+
+    @property
+    def is_there_unmerged_overleaf_rev(self) -> bool:
+        return not self("log", f"{self.working_branch}..{self.overleaf_branch}")
+
+    @property
+    def is_diff_working_overleaf(self) -> bool:
+        return not self("diff-tree", "-r", self.working_branch, self.overleaf_branch)
+
+    @property
+    def current_branch(self) -> str:
+        return self("branch", "--show-current")
+
+    def stash_working(self) -> None:
+        assert self.current_branch == self.working_branch
+        self("stash")
+
+    @property
+    def working_branch_status(self) -> list[str]:
+        assert self("branch", "--show-current") == self.working_branch
+        return self("diff", "--name-status", self.starting_working_commit).splitlines()
 
 
 class OverleafBroker:
@@ -474,14 +537,13 @@ class OverleafProject:
         self._unzip(ZIP_FILE)
         name = ";".join(f"{user["last_name"]}, {user["first_name"]}" for user in revision["meta"]["users"])
         email = ";".join(user["email"] for user in revision["meta"]["users"])
-        # _git("switch", OVERLEAF_BRANCH)
-        _git("add", ".")
-        _git(
-            "commit",
-            f"--date=@{revision["meta"]["end_ts"] // 1000}",
-            f"--author={name} <{email}>",
-            "-m",
-            f"{"old" if merge_old else revision['fromV']}->{toV}",
+        # _git("switch", self.overleaf_branch)
+        self.git_broker.add_all()
+        self.git_broker.commit(
+            msg=f"{"old" if merge_old else revision['fromV']}->{toV}",
+            ts=revision["meta"]["end_ts"] // 1000,
+            name=name,
+            email=email,
         )
         LOGGER.info("Version %s migrated.", toV)
         return ts
@@ -560,14 +622,8 @@ class OverleafProject:
             diff = self.overleaf_broker.diff(fromV, toV, pathname)
             _migrate(operation, pathname, diff)
         # Make git commit
-        _git("add", ".")
-        _git(
-            "commit",
-            f"--date=@{ts}",
-            f"--author={name} <{email}>",
-            "-m",
-            f"{fromV}->{toV}",
-        )
+        self.git_broker.add_all()
+        self.git_broker.commit(f"{fromV}->{toV}", ts, name, email)
         LOGGER.info("Revision %d->%d migrated.", fromV, toV)
 
     def _migrate_revisions_diff(self, revisions: list[dict]) -> None:
@@ -585,19 +641,6 @@ class OverleafProject:
         return self.overleaf_broker.updates[0]["toV"]
 
     @property
-    def local_overleaf_rev(self) -> int:
-        return int(_git("log", "-1", "--pretty=%B", OVERLEAF_BRANCH).split("->")[1])
-
-    @property
-    def current_working_commit(self) -> str:
-        return _git("rev-parse", WORKING_BRANCH)
-
-    @property
-    def starting_working_commit(self) -> str:
-        # The first commit ID where working branch forked from overleaf branch
-        return _git("merge-base", OVERLEAF_BRANCH, WORKING_BRANCH)
-
-    @property
     def is_there_new_working_commit(self) -> bool:
         return self.current_working_commit != self.starting_working_commit
 
@@ -608,17 +651,17 @@ class OverleafProject:
         updates = updates[: n_revisions + 1 if n_revisions > 0 or n_revisions + 1 > updates_length else None]
 
         LOGGER.info("Migrating all older revisions into the first git revision...")
-        _git("switch", "-c", OVERLEAF_BRANCH)
+        self.git_broker.switch_to_overleaf_branch()
         self._migrate_revision_zip(updates[-1], merge_old=True)
         LOGGER.info("Migrating the rest of the revisions...")
         self._migrate_revisions_zip(updates[:-1])
-        _git("switch", "-c", WORKING_BRANCH)
+        self.git_broker.switch_to_working_branch()
 
     def _git_repo_init_diff(self) -> None:
         LOGGER.info("Migrating all revisions...")
-        _git("switch", "-c", OVERLEAF_BRANCH)
+        self.git_broker.switch_to_overleaf_branch()
         self._migrate_revisions_diff(self.overleaf_broker.updates)
-        _git("switch", "-c", WORKING_BRANCH)
+        self.git_broker.switch_to_working_branch()
 
     def init(self, username: str, password: str, project_id: str):
         LOGGER.info("Initializing working directory...")
@@ -644,23 +687,11 @@ class OverleafProject:
 
     @property
     def is_there_new_remote_overleaf_rev(self) -> bool:
-        LOGGER.info("Fetched remote/local overleaf revision: %d/%d", self.remote_overleaf_rev, self.local_overleaf_rev)
-        assert self.remote_overleaf_rev >= self.local_overleaf_rev
-        return self.remote_overleaf_rev > self.local_overleaf_rev
-
-    def _git_rebase_overleaf_working(self) -> None:
-        # Rebase working branch to overleaf branch
-        result = _git("rebase", OVERLEAF_BRANCH, WORKING_BRANCH, check=False)
-        if "CONFLICT" in result:
-            LOGGER.error(
-                "Failed to rebase `%s` to branch `%s` after pulling.\n"
-                "%s\n"
-                "Fix conflicts and run `git rebase --continue`.",
-                WORKING_BRANCH,
-                OVERLEAF_BRANCH,
-                result,
-            )
-            exit(ErrorNumber.GIT_ERROR)
+        local_overleaf_rev = self.git_broker.local_overleaf_rev
+        remote_overleaf_rev = self.remote_overleaf_rev
+        LOGGER.info("Fetched remote/local overleaf revision: %d/%d", remote_overleaf_rev, local_overleaf_rev)
+        assert remote_overleaf_rev >= local_overleaf_rev
+        return remote_overleaf_rev > local_overleaf_rev
 
     def pull(self, dry_run=False, _branch_switching=True, _branch_rebasing=True) -> None:
         if not self.is_there_new_remote_overleaf_rev:
@@ -668,10 +699,11 @@ class OverleafProject:
             return
         LOGGER.info("Pulling changes from Overleaf project...")
 
-        # Get all new overleaf revisions and migrate using ZIP approach
-        upcoming_overleaf_rev = list(
-            takewhile(lambda rev: rev["toV"] > self.local_overleaf_rev, self.overleaf_broker.updates)
-        )
+        local_overleaf_rev = self.git_broker.local_overleaf_rev
+        remote_overleaf_updates = self.overleaf_broker.updates
+
+        # Get all new overleaf revisions
+        upcoming_overleaf_rev = list(takewhile(lambda rev: rev["toV"] > local_overleaf_rev, remote_overleaf_updates))
 
         LOGGER.info(
             "%d upcoming revisions: %s",
@@ -682,23 +714,22 @@ class OverleafProject:
         if dry_run:
             return
 
-        _git("switch", OVERLEAF_BRANCH)
+        self.git_broker.switch_to_overleaf_branch()
 
         # Using ZIP approach
         # self._migrate_revisions_zip(upcoming_overleaf_revisions)
 
         # Using diff approach
         # The corresponding remove overleaf revision of latest local overleaf revision may changed after the migration
-        if upcoming_overleaf_rev[-1]["fromV"] < self.local_overleaf_rev:
-            _git("commit", "--amend", "-m", f"{_git("log", "-1", "--pretty=%B")} (not complete)")
-            _git("reset", "--hard", "HEAD~1")
+        if upcoming_overleaf_rev[-1]["fromV"] < local_overleaf_rev:
+            self.git_broker.reset_hard(1)
         self._migrate_revisions_diff(upcoming_overleaf_rev)
 
         if _branch_switching:
-            _git("switch", WORKING_BRANCH)
+            self.git_broker.switch_to_working_branch()
 
         if _branch_rebasing:
-            self._git_rebase_overleaf_working()
+            self.git_broker.rebase_working_branch()
 
     ################################################################################
 
@@ -720,23 +751,23 @@ class OverleafProject:
 
         def _finalize_push() -> None:
             # Verify the push
-            assert _git("diff-tree", "-r", WORKING_BRANCH, OVERLEAF_BRANCH) == ""
-            _git("rebase", OVERLEAF_BRANCH, WORKING_BRANCH)
+            assert not self.git_broker.is_diff_working_overleaf
+            self.git_broker.rebase_working_branch()
 
         # Check if there are new changes to push
         if not self.is_there_new_working_commit:
             LOGGER.info("No new changes to push.")
             return
 
-        _git("switch", WORKING_BRANCH)
+        self.git_broker.switch_to_working_branch()
 
         # Perform stash before pushing to prevent uncommitted changes in working branch
         if stash:
             LOGGER.info(
                 "Stashing changes before pushing. Please run `git stash pop` after pushing to restore uncommitted changes."
             )
-            _git("stash")
-        elif not self.is_working_tree_clean:
+            self.git_broker.stash_working()
+        elif not self.git_broker.is_current_branch_clean:
             # Check if the working tree is clean
             LOGGER.error(
                 "Cannot push changes from a dirty working tree. Either run without `--no-stash` or commit changes first."
@@ -760,11 +791,11 @@ class OverleafProject:
 
         # Perform rebase before pushing to prevent unmerged changes in overleaf branch
         if rebase:
-            self._git_rebase_overleaf_working()
+            self.git_broker.rebase_working_branch()
 
         delete_list: list[str] = []
         upload_list: list[str] = []
-        for line in self.working_branch_name_status:
+        for line in self.git_broker.working_branch_status:
             LOGGER.info("status: %s", line)
             columns = line.split("\t")
             status = columns[0]
