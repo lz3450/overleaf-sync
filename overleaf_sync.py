@@ -142,8 +142,16 @@ class GitBroker:
     def current_working_commit(self) -> str:
         return self("rev-parse", self.working_branch)
 
-    def switch_to_overleaf_branch(self) -> None:
-        self("switch", self.overleaf_branch)
+    @property
+    def is_current_branch_clean(self) -> bool:
+        return not self("status", "--porcelain")
+
+    def switch_to_overleaf_branch(self, create=False) -> None:
+        assert self.is_current_branch_clean
+        if create:
+            self("switch", "-c", self.overleaf_branch)
+        else:
+            self("switch", self.overleaf_branch)
 
     def switch_to_working_branch(self, update=False) -> None:
         if update:
@@ -174,10 +182,6 @@ class GitBroker:
                 result,
             )
             exit(ErrorNumber.GIT_ERROR)
-
-    @property
-    def is_current_branch_clean(self) -> bool:
-        return not self("status", "--porcelain")
 
     @property
     def is_there_unmerged_overleaf_rev(self) -> bool:
@@ -656,6 +660,7 @@ class OverleafProject:
         updates = updates[: n_revisions + 1 if n_revisions > 0 or n_revisions + 1 > updates_length else None]
 
         LOGGER.info("Migrating all older revisions into the first git revision...")
+        self.git_broker.switch_to_overleaf_branch(create=True)
         self._migrate_revision_zip(updates[-1], merge_old=True)
         LOGGER.info("Migrating the rest of the revisions...")
         self._migrate_revisions_zip(updates[:-1])
@@ -663,6 +668,7 @@ class OverleafProject:
 
     def _git_repo_init_diff(self) -> None:
         LOGGER.info("Migrating all revisions...")
+        self.git_broker.switch_to_overleaf_branch(create=True)
         self._migrate_revisions_diff(self.overleaf_broker.updates)
         self.git_broker.switch_to_working_branch(update=True)
 
