@@ -157,13 +157,13 @@ class GitBroker:
         else:
             self("switch", self.overleaf_branch)
 
-    def update_working_branch(self) -> None:
-        self("branch", "-f", self.working_branch, self.overleaf_branch)
+    def _update_working_branch_start_commit(self) -> None:
         self("tag", "-f", self.WORKING_BRANCH_START_COMMIT_TAG, self.overleaf_branch)
 
-    def switch_to_working_branch(self, update=False) -> None:
-        if update:
-            self.update_working_branch()
+    def switch_to_working_branch(self, force=False) -> None:
+        if force:
+            self("branch", "-f", self.working_branch, self.overleaf_branch)
+            self._update_working_branch_start_commit()
         self("switch", self.working_branch)
 
     @property
@@ -177,17 +177,19 @@ class GitBroker:
     def reset_hard(self, n: int) -> None:
         self("reset", "--hard", f"HEAD~{n}")
 
-    def rebase_working_branch(self) -> None:
+    def rebase_working_branch(self) -> bool:
         # Rebase working branch to overleaf branch
+        self._update_working_branch_start_commit()
         result = self("rebase", self.overleaf_branch, self.working_branch, check=False)
         if "CONFLICT" in result:
             self.logger.error(
-                "Failed to rebase `%s` to branch `%s`.\n" "%s\n" "Fix conflicts and run `git rebase --continue`.",
+                "Failed to rebase `%s` to `%s`.\n" "%s\n" "Fix conflicts and run `git rebase --continue`.",
                 self.working_branch,
                 self.overleaf_branch,
                 result,
             )
-            exit(ErrorNumber.GIT_ERROR)
+            return False
+        return True
 
     @property
     def is_there_unmerged_overleaf_rev(self) -> bool:
@@ -691,7 +693,7 @@ class OverleafProject:
         return self.overleaf_broker.updates[0]["toV"]
 
     @property
-    def is_there_new_working_commit(self) -> bool:
+    def new_working_commit_exists(self) -> bool:
         return self.git_broker.current_working_commit != self.git_broker.starting_working_commit
 
     def _git_repo_init_zip(self, n_revisions: int) -> None:
@@ -705,15 +707,15 @@ class OverleafProject:
         self._migrate_revision_zip(updates[-1], merge_old=True)
         self.logger.info("Migrating the rest of the revisions...")
         self._migrate_revisions_zip(updates[:-1])
-        self.git_broker.switch_to_working_branch(update=True)
+        self.git_broker.switch_to_working_branch(force=True)
 
     def _git_repo_init_diff(self) -> None:
         self.logger.info("Migrating all revisions...")
         self.git_broker.switch_to_overleaf_branch(create=True)
         self._migrate_revisions_diff(self.overleaf_broker.updates)
-        self.git_broker.switch_to_working_branch(update=True)
+        self.git_broker.switch_to_working_branch(force=True)
 
-    def init(self, username: str, password: str, project_id: str):
+    def init(self, username: str, password: str, project_id: str) -> ErrorNumber:
         self.logger.info("Initializing working directory...")
         # Create overleaf-sync directory
         os.makedirs(self.overleaf_sync_dir, exist_ok=True)
@@ -734,6 +736,8 @@ class OverleafProject:
         # Migrate overleaf revisions to git repo
         # self._git_repo_init_zip(n_revisions)
         self._git_repo_init_diff()
+
+        return ErrorNumber.OK
 
     @property
     def is_there_new_remote_overleaf_rev(self) -> bool:
@@ -757,12 +761,12 @@ class OverleafProject:
             exit(ErrorNumber.WORKING_TREE_DIRTY_ERROR)
         return stash
 
-    def pull(self, stash=True, dry_run=False, _branch_switching=True, _branch_rebasing=True) -> None:
+    def pull(self, stash=True, rebase=True, switch=True, dry_run=False) -> ErrorNumber:
         self.sanity_check()
 
         if not self.is_there_new_remote_overleaf_rev:
             self.logger.info("No new changes to pull.")
-            return
+            return ErrorNumber.OK
 
         # Perform stash before pulling to prevent uncommitted changes in working branch
         # Reuse `stash` to check if there are stashed changes
@@ -784,7 +788,7 @@ class OverleafProject:
         )
 
         if dry_run:
-            return
+            return ErrorNumber.OK
 
         # The corresponding remove overleaf revision of latest local overleaf revision may changed after the migration
         # For example, 63->67 may become 63->64, 64->68
@@ -795,26 +799,28 @@ class OverleafProject:
             del upcoming_overleaf_rev[0]
 
         self._migrate_revisions_diff(upcoming_overleaf_rev)
+        self.logger.debug("Current branch: %s", self.git_broker.current_branch)
 
-        if _branch_rebasing and self.is_there_new_working_commit:
+        if rebase:
             self.logger.debug("Rebasing working branch after pulling...")
-            self.git_broker.rebase_working_branch()
-
-        if _branch_switching:
-            self.logger.debug("Switching back to working branch after pulling...")
-            self.git_broker.switch_to_working_branch(update=True)
-        else:
-            self.logger.debug("Not switched back to working branch after pulling.")
-            self.git_broker.update_working_branch()
+            # Reuse `rebase` to check if there are conflicts
+            rebase = self.git_broker.rebase_working_branch()
+        elif switch:
+            self.logger.debug("Switching back to working branch without rebasing after pulling...")
+            self.git_broker.switch_to_working_branch()
 
         # There are stashed changes
         if stash:
-            if not _branch_switching:
+            if self.git_broker.current_branch != self.git_broker.working_branch or not rebase:
                 self.logger.warning("Stash not pop'ed. Please run `git stash pop` to restore changes.")
+                return ErrorNumber.GIT_ERROR
             else:
+                self.logger.info("Pop'ing stashed changes...")
                 self.git_broker.stash_pop_working()
 
-    def push(self, pull=True, stash=True, force=False, dry_run=False) -> None:
+        return ErrorNumber.OK
+
+    def push(self, pull=True, stash=True, force=False, dry_run=False) -> ErrorNumber:
         self.sanity_check()
 
         # TODO: Implement prune
@@ -826,9 +832,9 @@ class OverleafProject:
             # self.git_broker.switch_to_working_branch(update=True)
 
         # Check if there are new changes to push
-        if not self.is_there_new_working_commit:
+        if not self.new_working_commit_exists:
             self.logger.info("No new changes to push.")
-            return
+            return ErrorNumber.OK
 
         # Perform force push
         if force:
@@ -841,7 +847,7 @@ class OverleafProject:
         elif self.is_there_new_remote_overleaf_rev:
             # Check if there are new changes in remote overleaf
             self.logger.error("There are new remote overleaf revisions. Please pull first.")
-            exit(ErrorNumber.PUSH_ERROR)
+            return ErrorNumber.PUSH_ERROR
 
         # Perform stash before pushing to prevent uncommitted changes in working branch
         # Reuse `stash` to check if there are stashed changes
@@ -878,8 +884,10 @@ class OverleafProject:
         # It is possible that the refresh happened after changes from other remote overleaf users
         # The push verification may fail in this case
         self.overleaf_broker.refresh_updates()
-        self.pull(stash=True, _branch_switching=False, _branch_rebasing=False)
+        self.pull(stash=True, rebase=False, switch=False)
         _finalize_push()
+
+        return ErrorNumber.OK
 
 
 if __name__ == "__main__":
@@ -920,10 +928,10 @@ if __name__ == "__main__":
 
     match args.command:
         case "init":
-            project.init(username=args.username, password=args.password, project_id=args.project_id)
+            exit(project.init(username=args.username, password=args.password, project_id=args.project_id))
         case "pull":
-            project.pull(stash=(not args.no_stash), dry_run=args.dry_run)
+            exit(project.pull(stash=(not args.no_stash), dry_run=args.dry_run))
         case "push":
-            project.push(pull=(not args.no_pull), force=args.force, dry_run=args.dry_run)
+            exit(project.push(pull=(not args.no_pull), force=args.force, dry_run=args.dry_run))
         case _:
             parser.print_help()
