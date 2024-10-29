@@ -70,6 +70,8 @@ class ErrorNumber(IntEnum):
 
 
 class GitBroker:
+    WORKING_BRANCH_START_COMMIT_TAG = "ws"
+
     def __init__(self, working_dir, overleaf_branch="overleaf", working_branch="working") -> None:
         self.working_dir = working_dir
         self.overleaf_branch = overleaf_branch
@@ -133,28 +135,30 @@ class GitBroker:
     @property
     def starting_working_commit(self) -> str:
         # The first commit ID where working branch forked from overleaf branch
-        return self("merge-base", self.overleaf_branch, self.overleaf_branch)
+        # return self("merge-base", self.overleaf_branch, self.overleaf_branch)
+        return self("rev-parse", self.WORKING_BRANCH_START_COMMIT_TAG)
 
     @property
     def current_working_commit(self) -> str:
         return self("rev-parse", self.working_branch)
 
-    def _switch_branch(self, branch: str, create=False) -> None:
-        cmd = ["switch"]
-        if create:
-            cmd.append("-c")
-        cmd.append(branch)
-        self(*cmd)
+    def switch_to_overleaf_branch(self) -> None:
+        self("switch", self.overleaf_branch)
 
-    def switch_to_overleaf_branch(self, create=False) -> None:
-        self._switch_branch(self.overleaf_branch, create)
-
-    def switch_to_working_branch(self, create=False) -> None:
-        self._switch_branch(self.working_branch, create)
+    def switch_to_working_branch(self, update=False) -> None:
+        if update:
+            self("switch", "-C", self.working_branch, self.overleaf_branch)
+            self("tag", "-f", self.WORKING_BRANCH_START_COMMIT_TAG)
+        else:
+            self("switch", self.working_branch)
 
     @property
     def local_overleaf_rev(self) -> int:
         return int(self("log", "-1", "--pretty=%B", self.overleaf_branch).split("->")[1])
+
+    @property
+    def local_overleaf_previous_rev(self) -> int:
+        return int(self("log", "-1", "--pretty=%B", self.overleaf_branch).split("->")[0])
 
     def reset_hard(self, n: int) -> None:
         self("reset", "--hard", f"HEAD~{n}")
@@ -492,7 +496,7 @@ class OverleafBroker:
 
 
 class OverleafProject:
-    def __init__(self, working_dir: str = os.getcwd()) -> None:
+    def __init__(self, working_dir: str = ".") -> None:
         self.working_dir = working_dir
         self.overleaf_sync_dir = os.path.join(self.working_dir, OVERLEAF_SYNC_DIR_NAME)
         self.config_file = os.path.join(self.overleaf_sync_dir, "config.json")
@@ -652,17 +656,15 @@ class OverleafProject:
         updates = updates[: n_revisions + 1 if n_revisions > 0 or n_revisions + 1 > updates_length else None]
 
         LOGGER.info("Migrating all older revisions into the first git revision...")
-        self.git_broker.switch_to_overleaf_branch(create=True)
         self._migrate_revision_zip(updates[-1], merge_old=True)
         LOGGER.info("Migrating the rest of the revisions...")
         self._migrate_revisions_zip(updates[:-1])
-        self.git_broker.switch_to_working_branch(create=True)
+        self.git_broker.switch_to_working_branch(update=True)
 
     def _git_repo_init_diff(self) -> None:
         LOGGER.info("Migrating all revisions...")
-        self.git_broker.switch_to_overleaf_branch(create=True)
         self._migrate_revisions_diff(self.overleaf_broker.updates)
-        self.git_broker.switch_to_working_branch(create=True)
+        self.git_broker.switch_to_working_branch(update=True)
 
     def init(self, username: str, password: str, project_id: str):
         LOGGER.info("Initializing working directory...")
@@ -700,11 +702,12 @@ class OverleafProject:
             return
         LOGGER.info("Pulling changes from Overleaf project...")
 
-        local_overleaf_rev = self.git_broker.local_overleaf_rev
-        remote_overleaf_updates = self.overleaf_broker.updates
-
         # Get all new overleaf revisions
-        upcoming_overleaf_rev = list(takewhile(lambda rev: rev["toV"] > local_overleaf_rev, remote_overleaf_updates))
+        upcoming_overleaf_rev = list(
+            takewhile(
+                lambda rev: rev["fromV"] >= self.git_broker.local_overleaf_previous_rev, self.overleaf_broker.updates
+            )
+        )
 
         LOGGER.debug(
             "%d upcoming revisions: %s",
@@ -717,22 +720,19 @@ class OverleafProject:
 
         self.git_broker.switch_to_overleaf_branch()
 
-        # Using ZIP approach
-        # self._migrate_revisions_zip(upcoming_overleaf_revisions)
-
-        # Using diff approach
         # The corresponding remove overleaf revision of latest local overleaf revision may changed after the migration
-        if upcoming_overleaf_rev[-1]["fromV"] < local_overleaf_rev:
-            self.git_broker.reset_hard(1)
+        # For example, 63->67 may become 63->64, 64->68
+        self.git_broker.reset_hard(1)
         self._migrate_revisions_diff(upcoming_overleaf_rev)
 
         if _branch_switching:
             self.git_broker.switch_to_working_branch()
 
         if _branch_rebasing:
-            self.git_broker.rebase_working_branch()
-
-    ################################################################################
+            if self.is_there_new_working_commit:
+                self.git_broker.rebase_working_branch()
+            else:
+                self.git_broker.switch_to_working_branch(update=True)
 
     def push(self, stash=True, pull=True, rebase=True, force=False, dry_run=False) -> None:
         # TODO: Implement prune
