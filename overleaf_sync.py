@@ -31,15 +31,6 @@ LOGIN_URL = f"{OVERLEAF_URL}/login"
 PROJECTS_URL = f"{OVERLEAF_URL}/project"
 
 OVERLEAF_SYNC_DIR_NAME = ".overleaf-sync"
-OVERLEAF_SYNC_DIR = os.path.join(os.getcwd(), OVERLEAF_SYNC_DIR_NAME)
-WORKING_DIR = os.path.abspath(os.path.join(OVERLEAF_SYNC_DIR, ".."))
-CONFIG_FILE = os.path.join(OVERLEAF_SYNC_DIR, "config.json")
-ZIP_FILE = os.path.join(OVERLEAF_SYNC_DIR, "latex.zip")
-PROJECT_UPDATES_FILE = os.path.join(OVERLEAF_SYNC_DIR, "updates.json")
-IDS_FILE = os.path.join(OVERLEAF_SYNC_DIR, "file_ids.json")
-
-OVERLEAF_BRANCH = "overleaf"
-WORKING_BRANCH = "working"
 
 LOGGER = logging.getLogger(__name__)
 LOGGER_FORMATTER = logging.Formatter("[%(asctime)s] [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
@@ -101,16 +92,16 @@ class GitBroker:
                 LOGGER.warning("Reinitializing git repository in %s...", self.working_dir)
                 shutil.rmtree(os.path.join(self.working_dir, ".git"))
             else:
-                LOGGER.error("Git repository already exists in %s. Exiting...", WORKING_DIR)
+                LOGGER.error("Git repository already exists in %s. Exiting...", self.working_dir)
                 exit(ErrorNumber.REINITIALIZATION_ERROR)
         self("init", "-b", self.working_branch)
 
     def sanity_check(self) -> None:
         # Check if git repository is initialized
-        if not os.path.exists(os.path.join(WORKING_DIR, ".git")):
+        if not os.path.exists(os.path.join(self.working_dir, ".git")):
             LOGGER.error(
                 "Git is not initialized for LaTeX project in directory `%s`. Please reinitialize the project.",
-                WORKING_DIR,
+                self.working_dir,
             )
             exit(ErrorNumber.GIT_DIR_CORRUPTED_ERROR)
         # Check if both overleaf branch and working branch exist
@@ -200,7 +191,12 @@ class GitBroker:
 
 
 class OverleafBroker:
-    def __init__(self) -> None:
+    def __init__(self, working_dir: str, overleaf_sync_dir: str) -> None:
+        self.working_dir = working_dir
+        self.overleaf_sync_dir = overleaf_sync_dir
+        self.updates_file = os.path.join(self.overleaf_sync_dir, "updates.json")
+        self.overleaf_zip = os.path.join(self.overleaf_sync_dir, "overleaf.zip")
+        self.ids_file = os.path.join(self.overleaf_sync_dir, "ids.json")
         self._session = requests.Session()
         self._session.headers.update(
             {
@@ -277,7 +273,7 @@ class OverleafBroker:
         self._updates = json.loads(response.text)["updates"]
         if not self._updates:
             raise ValueError("Failed to fetch project updates.")
-        with open(PROJECT_UPDATES_FILE, "w") as f:
+        with open(self.updates_file, "w") as f:
             json.dump(self._updates, f)
         return self._updates
 
@@ -293,10 +289,27 @@ class OverleafBroker:
         LOGGER.debug("Downloading project ZIP from url: %s...", url)
         response = self._get(url)
         ts = time()
-        with open(ZIP_FILE, "wb") as f:
+        with open(self.overleaf_zip, "wb") as f:
             f.write(response.content)
-        LOGGER.debug("Project ZIP downloaded as %s", ZIP_FILE)
+        LOGGER.debug("Project ZIP downloaded as %s", self.overleaf_zip)
         return ts
+
+    def unzip(self, file_list: list | None = None) -> list[str]:
+        """
+        Unzip the downloaded ZIP file to the LaTeX project directory.
+        `file_list`: List of files to extract. If `None`, extract all files.
+        """
+        LOGGER.debug("Unzipping file %s to directory %s...", self.overleaf_zip, self.working_dir)
+        with zipfile.ZipFile(self.overleaf_zip, "r") as zip_ref:
+            if file_list:
+                # TODO: not tested
+                for file in zip_ref.filelist:
+                    LOGGER.debug("Extracting %s...", file)
+                    zip_ref.extract(file, self.working_dir)
+            else:
+                zip_ref.extractall(self.working_dir)
+            # Delete files not in the ZIP file
+            return [zip_info.filename for zip_info in zip_ref.filelist]
 
     @property
     def csrf_token(self) -> str:
@@ -322,7 +335,7 @@ class OverleafBroker:
 
     def diff(self, from_: int, to_: int, pathname: str) -> list[dict]:
         LOGGER.debug("Fetching diff of file %s from %d to %d...", pathname, from_, to_)
-        url = f"{PROJECTS_URL}/{self.project_id}/diff?from={from_}&to={to_}&pathname={pathname}"
+        url = f"{PROJECTS_URL}/{self.project_id}/diff?from={from_}&to={to_}&pathname={urllib.parse.quote(pathname)}"
         headers = {
             "Accept": "application/json",
             "Referer": self.project_url,
@@ -351,7 +364,7 @@ class OverleafBroker:
         ws.close()
         self._original_file_ids = json.loads(data[4:])["args"][0]["project"]["rootFolder"][0]
 
-        with open(IDS_FILE, "w") as f:
+        with open(self.ids_file, "w") as f:
             json.dump(self._original_file_ids, f)
 
         if not self._original_file_ids:
@@ -389,7 +402,7 @@ class OverleafBroker:
         }
         params = {"folder_id": self.root_folder_id}
         data = {"relativePath": f"{relative_path}", "name": file_name, "type": "application/octet-stream"}
-        qqfile = open(os.path.join(WORKING_DIR, pathname), "rb")
+        qqfile = open(os.path.join(self.working_dir, pathname), "rb")
         files = {"qqfile": (file_name, qqfile, "application/octet-stream")}
         response = self._post(url, headers=headers, params=params, data=data, files=files)
         qqfile.close()
@@ -474,15 +487,15 @@ class OverleafBroker:
 
 
 class OverleafProject:
-    def __init__(self) -> None:
-        self.overleaf_sync_dir = os.path.join(os.getcwd(), OVERLEAF_SYNC_DIR_NAME)
+    def __init__(self, working_dir: str = os.getcwd()) -> None:
+        self.working_dir = working_dir
+        self.overleaf_sync_dir = os.path.join(self.working_dir, OVERLEAF_SYNC_DIR_NAME)
         self.config_file = os.path.join(self.overleaf_sync_dir, "config.json")
-        self.working_dir = os.path.abspath(os.path.join(self.overleaf_sync_dir, ".."))
 
         # Initialize git broker
         self.git_broker = GitBroker(self.working_dir)
         # Initialize overleaf broker
-        self.overleaf_broker = OverleafBroker()
+        self.overleaf_broker = OverleafBroker(self.working_dir, self.overleaf_sync_dir)
         if not os.path.exists(self.config_file):
             return
 
@@ -494,31 +507,6 @@ class OverleafProject:
     def sanity_check(self) -> None:
         # git repo
         self.git_broker.sanity_check()
-
-    @property
-    def managed_files(self) -> list[str]:
-        return _git("ls-files").splitlines()
-
-    def _unzip(self, zip_file: str, file_list: list | None = None) -> None:
-        """
-        Unzip the downloaded ZIP file to the LaTeX project directory.
-        `file_list`: List of files to extract. If `None`, extract all files.
-        """
-        LOGGER.debug("Unzipping file %s to directory %s...", zip_file, WORKING_DIR)
-        with zipfile.ZipFile(zip_file, "r") as zip_ref:
-            if file_list:
-                # TODO: not tested
-                for file in zip_ref.filelist:
-                    LOGGER.debug("Extracting %s...", file)
-                    zip_ref.extract(file, WORKING_DIR)
-            else:
-                zip_ref.extractall(WORKING_DIR)
-            # Delete files not in the ZIP file
-            zip_filenames = {zip_info.filename for zip_info in zip_ref.filelist}
-            for managed_file in self.managed_files:
-                if managed_file and managed_file not in zip_filenames:
-                    LOGGER.info("Deleting file %s from filesystem...", managed_file)
-                    os.remove(os.path.join(WORKING_DIR, managed_file))
 
     def _migrate_revision_zip(self, revision: dict, merge_old: bool = False) -> float:
         """
@@ -534,7 +522,12 @@ class OverleafProject:
             LOGGER.error("Failed to download revision %d:\n%s.", toV, e)
             LOGGER.error("Please remove the working directory and try again later. Exiting...")
             exit(ErrorNumber.HTTP_ERROR)
-        self._unzip(ZIP_FILE)
+        extracted_pathnames = self.overleaf_broker.unzip()
+        # Delete files not in the ZIP
+        for managed_file in self.git_broker.managed_files:
+            if managed_file not in extracted_pathnames:
+                LOGGER.info("Deleting file %s from filesystem...", managed_file)
+                os.remove(os.path.join(self.working_dir, managed_file))
         name = ";".join(f"{user["last_name"]}, {user["first_name"]}" for user in revision["meta"]["users"])
         email = ";".join(user["email"] for user in revision["meta"]["users"])
         # _git("switch", self.overleaf_branch)
@@ -598,7 +591,7 @@ class OverleafProject:
             return content
 
         def _migrate(operation: str, pathname: str, diff: list[dict]) -> None:
-            path = os.path.join(WORKING_DIR, pathname)
+            path = os.path.join(self.working_dir, pathname)
             match operation:
                 case "added" | "edited":
                     LOGGER.debug("Adding/Editing %s...", item["pathname"])
@@ -608,7 +601,7 @@ class OverleafProject:
                 case "removed":
                     os.remove(path)
                 case "renamed":
-                    os.rename(path, os.path.join(WORKING_DIR, item["newPathname"]))
+                    os.rename(path, os.path.join(self.working_dir, item["newPathname"]))
                 case _:
                     raise ValueError(f"Unsupported operation: {item['operation']}")
 
@@ -642,7 +635,7 @@ class OverleafProject:
 
     @property
     def is_there_new_working_commit(self) -> bool:
-        return self.current_working_commit != self.starting_working_commit
+        return self.git_broker.current_working_commit != self.git_broker.starting_working_commit
 
     def _git_repo_init_zip(self, n_revisions: int) -> None:
         updates: list[dict] = self.overleaf_broker.updates
@@ -666,16 +659,16 @@ class OverleafProject:
     def init(self, username: str, password: str, project_id: str):
         LOGGER.info("Initializing working directory...")
         # Create overleaf-sync directory
-        os.makedirs(OVERLEAF_SYNC_DIR, exist_ok=True)
+        os.makedirs(self.overleaf_sync_dir, exist_ok=True)
         # Write `config.json`
-        if os.path.exists(CONFIG_FILE):
-            LOGGER.warning("Overwriting config file `%s`...", CONFIG_FILE)
+        if os.path.exists(self.config_file):
+            LOGGER.warning("Overwriting config file `%s`...", self.config_file)
         else:
-            LOGGER.info("Saving config file to %s.", CONFIG_FILE)
-        with open(CONFIG_FILE, "w") as f:
+            LOGGER.info("Saving config file to %s.", self.config_file)
+        with open(self.config_file, "w") as f:
             json.dump({"username": username, "password": password, "project_id": project_id}, f)
         # Write `.gitignore`
-        with open(os.path.join(OVERLEAF_SYNC_DIR, ".gitignore"), "w") as f:
+        with open(os.path.join(self.overleaf_sync_dir, ".gitignore"), "w") as f:
             f.write("*")
         # Initialize git repo
         self.git_broker.init()
@@ -732,19 +725,6 @@ class OverleafProject:
             self.git_broker.rebase_working_branch()
 
     ################################################################################
-
-    @property
-    def is_working_tree_clean(self) -> bool:
-        return not _git("status", "--porcelain")
-
-    @property
-    def is_there_no_merged_changes(self) -> bool:
-        return not _git("log", f"{WORKING_BRANCH}..{OVERLEAF_BRANCH}")
-
-    @property
-    def working_branch_name_status(self) -> list[str]:
-        assert _git("branch", "--show-current") == WORKING_BRANCH
-        return _git("diff", "--name-status", self.starting_working_commit).splitlines()
 
     def push(self, stash=True, pull=True, rebase=True, force=False, dry_run=False) -> None:
         # TODO: Implement prune
