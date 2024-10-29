@@ -94,7 +94,7 @@ class GitBroker:
             else:
                 LOGGER.error("Git repository already exists in %s. Exiting...", self.working_dir)
                 exit(ErrorNumber.REINITIALIZATION_ERROR)
-        self("init", "-b", self.working_branch)
+        self("init", "-b", self.overleaf_branch)
 
     def sanity_check(self) -> None:
         # Check if git repository is initialized
@@ -139,11 +139,18 @@ class GitBroker:
     def current_working_commit(self) -> str:
         return self("rev-parse", self.working_branch)
 
-    def switch_to_overleaf_branch(self) -> None:
-        self("switch", self.overleaf_branch)
+    def _switch_branch(self, branch: str, create=False) -> None:
+        cmd = ["switch"]
+        if create:
+            cmd.append("-c")
+        cmd.append(branch)
+        self(*cmd)
 
-    def switch_to_working_branch(self) -> None:
-        self("switch", self.working_branch)
+    def switch_to_overleaf_branch(self, create=False) -> None:
+        self._switch_branch(self.overleaf_branch, create)
+
+    def switch_to_working_branch(self, create=False) -> None:
+        self._switch_branch(self.working_branch, create)
 
     @property
     def local_overleaf_rev(self) -> int:
@@ -208,7 +215,6 @@ class OverleafBroker:
         self.username: str | None = None
         self.password: str | None = None
         self.project_id: str | None = None
-        self.project_url = f"{PROJECTS_URL}/{self.project_id}"
         self._logged_in = False
         self._updates: list[dict] | None = None
         self._csrf_token: str | None = None
@@ -216,26 +222,25 @@ class OverleafBroker:
         self._root_folder_id: str | None = None
         self._indexed_file_ids: dict[str, dict[str, str]] | None = None
 
-    def _get(self, url: str, headers=None) -> requests.Response:
+    @property
+    def project_url(self) -> str:
+        return f"{PROJECTS_URL}/{self.project_id}"
+
+    def _request(self, method: str, url: str, **kwargs) -> requests.Response:
         if not self._logged_in:
             LOGGER.error("Not logged in. Please login first.")
-        response = self._session.get(url, headers=headers)
+        response = self._session.request(method, url, **kwargs)
         response.raise_for_status()
         return response
 
-    def _post(self, url: str, headers=None, params=None, data=None, files=None) -> requests.Response:
-        if not self._logged_in:
-            LOGGER.error("Not logged in. Please login first.")
-        response = self._session.post(url, headers=None, params=None, data=None, files=None)
-        response.raise_for_status()
-        return response
+    def _get(self, url: str, **kwargs) -> requests.Response:
+        return self._request("GET", url, **kwargs)
 
-    def _delete(self, url: str, headers=None) -> requests.Response:
-        if not self._logged_in:
-            LOGGER.error("Not logged in. Please login first.")
-        response = self._session.delete(url, headers=headers)
-        response.raise_for_status()
-        return response
+    def _post(self, url: str, **kwargs) -> requests.Response:
+        return self._request("POST", url, **kwargs)
+
+    def _delete(self, url: str, **kwargs) -> requests.Response:
+        return self._request("DELETE", url, **kwargs)
 
     def login(self, username: str | None = None, password: str | None = None, project_id: str | None = None) -> None:
         if self._logged_in:
@@ -269,7 +274,7 @@ class OverleafBroker:
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
         }
         LOGGER.debug("Fetching project updates from %s...", url)
-        response = self._get(url, headers)
+        response = self._get(url, headers=headers)
         self._updates = json.loads(response.text)["updates"]
         if not self._updates:
             raise ValueError("Failed to fetch project updates.")
@@ -644,17 +649,17 @@ class OverleafProject:
         updates = updates[: n_revisions + 1 if n_revisions > 0 or n_revisions + 1 > updates_length else None]
 
         LOGGER.info("Migrating all older revisions into the first git revision...")
-        self.git_broker.switch_to_overleaf_branch()
+        self.git_broker.switch_to_overleaf_branch(create=True)
         self._migrate_revision_zip(updates[-1], merge_old=True)
         LOGGER.info("Migrating the rest of the revisions...")
         self._migrate_revisions_zip(updates[:-1])
-        self.git_broker.switch_to_working_branch()
+        self.git_broker.switch_to_working_branch(create=True)
 
     def _git_repo_init_diff(self) -> None:
         LOGGER.info("Migrating all revisions...")
-        self.git_broker.switch_to_overleaf_branch()
+        self.git_broker.switch_to_overleaf_branch(create=True)
         self._migrate_revisions_diff(self.overleaf_broker.updates)
-        self.git_broker.switch_to_working_branch()
+        self.git_broker.switch_to_working_branch(create=True)
 
     def init(self, username: str, password: str, project_id: str):
         LOGGER.info("Initializing working directory...")
