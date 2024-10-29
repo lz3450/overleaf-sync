@@ -199,6 +199,10 @@ class GitBroker:
         assert self.current_branch == self.working_branch
         self("stash")
 
+    def stash_pop_working(self) -> None:
+        assert self.current_branch == self.working_branch
+        self("stash", "pop")
+
     @property
     def working_branch_status(self) -> list[str]:
         assert self("branch", "--show-current") == self.working_branch
@@ -702,11 +706,24 @@ class OverleafProject:
         assert remote_overleaf_rev >= local_overleaf_rev
         return remote_overleaf_rev > local_overleaf_rev
 
-    def pull(self, dry_run=False, _branch_switching=True, _branch_rebasing=True) -> None:
+    def pull(self, stash=True, dry_run=False, _stash_pop=True, _branch_switching=True, _branch_rebasing=True) -> None:
         if not self.is_there_new_remote_overleaf_rev:
             LOGGER.info("No new changes to pull.")
             return
-        LOGGER.info("Pulling changes from Overleaf project...")
+
+        # Perform stash before pushing to prevent uncommitted changes in working branch
+        if stash:
+            LOGGER.info("Stashing changes before pushing.")
+            self.git_broker.switch_to_working_branch()
+            self.git_broker.stash_working()
+        elif not self.git_broker.is_current_branch_clean:
+            # Check if the working tree is clean
+            LOGGER.error(
+                "Cannot push changes from a dirty working tree. Either run without `--no-stash` or commit changes first."
+            )
+            exit(ErrorNumber.PULL_ERROR)
+
+        LOGGER.info("Pulling changes from Overleaf...")
 
         # Get all new overleaf revisions
         upcoming_overleaf_rev = list(
@@ -724,11 +741,14 @@ class OverleafProject:
         if dry_run:
             return
 
-        self.git_broker.switch_to_overleaf_branch()
-
         # The corresponding remove overleaf revision of latest local overleaf revision may changed after the migration
         # For example, 63->67 may become 63->64, 64->68
-        self.git_broker.reset_hard(1)
+        self.git_broker.switch_to_overleaf_branch()
+        if upcoming_overleaf_rev[0]["toV"] != self.git_broker.local_overleaf_rev:
+            self.git_broker.reset_hard(1)
+        else:
+            del upcoming_overleaf_rev[0]
+
         self._migrate_revisions_diff(upcoming_overleaf_rev)
 
         if _branch_switching:
@@ -740,7 +760,9 @@ class OverleafProject:
             else:
                 self.git_broker.switch_to_working_branch(update=True)
 
-    def push(self, stash=True, pull=True, rebase=True, force=False, dry_run=False) -> None:
+        if stash and _stash_pop:
+            self.git_broker.stash_pop_working()
+
         # TODO: Implement prune
 
         def _finalize_push() -> None:
