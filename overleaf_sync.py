@@ -580,7 +580,8 @@ class OverleafProject:
             if managed_file not in extracted_pathnames:
                 self.logger.info("Deleting file %s from filesystem...", managed_file)
                 os.remove(os.path.join(self.working_dir, managed_file))
-        name = ";".join(f"{user["last_name"]}, {user["first_name"]}" for user in revision["meta"]["users"])
+        users: list[dict[str, str]] = revision["meta"]["users"]
+        name = ";".join(f"{user.get("last_name", "")}, {user.get("first_name", "")}" for user in users)
         email = ";".join(user["email"] for user in revision["meta"]["users"])
         # _git("switch", self.overleaf_branch)
         self.git_broker.add_all()
@@ -622,7 +623,8 @@ class OverleafProject:
         fromV = revision["fromV"]
         toV = revision["toV"]
         ts = revision["meta"]["end_ts"] // 1000
-        name = ";".join(f"{user["last_name"]}, {user["first_name"]}" for user in revision["meta"]["users"])
+        users: list[dict[str, str]] = revision["meta"]["users"]
+        name = ";".join(f"{user.get("last_name", "")}, {user.get("first_name", "")}" for user in users)
         email = ";".join(user["email"] for user in revision["meta"]["users"])
 
         def _diff_to_content(diff: list[dict]) -> str:
