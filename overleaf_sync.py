@@ -370,6 +370,33 @@ class OverleafBroker:
         response.raise_for_status()
         return json.loads(response.text)["diff"]
 
+    def _find_id_type(self, path: str) -> tuple[str, str]:
+        LOGGER.debug("Finding id for `%s`...", path)
+        ids = self.indexed_file_ids
+        if path in ids["fileRefs"]:
+            return ids["fileRefs"][path], "file"
+        elif path in ids["docs"]:
+            return ids["docs"][path], "doc"
+        elif path in ids["folders"]:
+            return ids["folders"][path], "folder"
+        else:
+            raise ValueError(f"No id found for `{path}`")
+
+    def download_binary_file(self, pathname: str) -> None:
+        LOGGER.debug("Downloading binary file %s...", pathname)
+        id, type = self._find_id_type(pathname)
+        url = f"{PROJECTS_URL}/{self.project_id}/file/{id}"
+        headers = {
+            "Accept": "*/*",
+            "Referer": self.project_url,
+        }
+        response = self._get(url, headers=headers)
+        response.raise_for_status()
+        if dirname := os.path.dirname(pathname):
+            os.makedirs(dirname, exist_ok=True)
+        with open(os.path.join(self.working_dir, pathname), "wb") as f:
+            f.write(response.content)
+
     @property
     def original_file_ids(self) -> dict:
         if self._original_file_ids:
@@ -455,17 +482,9 @@ class OverleafBroker:
         self._indexed_file_ids = ids
         return self._indexed_file_ids
 
-    def _find_id_type(self, path: str) -> tuple[str, str]:
-        LOGGER.debug("Finding id for `%s`...", path)
-        ids = self.indexed_file_ids
-        if path in ids["fileRefs"]:
-            return ids["fileRefs"][path], "file"
-        elif path in ids["docs"]:
-            return ids["docs"][path], "doc"
-        elif path in ids["folders"]:
-            return ids["folders"][path], "folder"
-        else:
-            raise ValueError(f"No id found for `{path}`")
+    def refresh_indexed_file_ids(self) -> None:
+        self._original_file_ids = None
+        self._indexed_file_ids = None
 
     def create_folder(self, path: str, dry_run=False) -> None:
         LOGGER.info("Creating folder %s...", path)
