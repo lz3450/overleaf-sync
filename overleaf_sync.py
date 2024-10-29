@@ -124,12 +124,16 @@ class GitBroker:
     def managed_files(self) -> list[str]:
         return self("ls-files").splitlines()
 
-    def add_all(self) -> None:
-        self("add", ".")
+    def add_all(self) -> bool:
+        output = self("add", ".")
+        if "nothing to commit" in output:
+            return False
+        return True
 
     def commit(self, msg: str, ts: int, name: str, email: str) -> None:
         self(
             "commit",
+            "--allow-empty",
             f"--date=@{ts}",
             f"--author={name} <{email}>",
             "-m",
@@ -560,38 +564,40 @@ class OverleafProject:
         # git repo
         self.git_broker.sanity_check()
 
-    def _migrate_revision_zip(self, revision: dict, merge_old: bool = False) -> float:
+    def _migrate_revision_zip(self, revision: dict, init: bool = False) -> float:
         """
         Migrate the overleaf revision to a git revision using revision ZIP.
         Note that this function is not responsible for switching branch.
         `old`: Whether to merge all old revisions.
         """
-        toV = revision["toV"]
-        self.logger.info("Migrating (ZIP) revision %d...", toV)
+        revision_to_migrate = revision["fromV"] if init else revision["toV"]
+        self.logger.info("Migrating (ZIP) revision %d...", revision_to_migrate)
         try:
-            ts = self.overleaf_broker.download_zip(toV)
+            ts = self.overleaf_broker.download_zip(revision_to_migrate)
         except requests.HTTPError as e:
-            self.logger.error("Failed to download revision %d:\n%s.", toV, e)
-            self.logger.error("Please remove the working directory and try again later. Exiting...")
+            self.logger.critical("Failed to download revision %d:\n%s.", revision_to_migrate, e)
+            self.logger.critical("Please remove the working directory and try again later. Exiting...")
             exit(ErrorNumber.HTTP_ERROR)
         extracted_pathnames = self.overleaf_broker.unzip()
         # Delete files not in the ZIP
-        for managed_file in self.git_broker.managed_files:
-            if managed_file not in extracted_pathnames:
-                self.logger.info("Deleting file %s from filesystem...", managed_file)
-                os.remove(os.path.join(self.working_dir, managed_file))
+        if not init:
+            for managed_file in self.git_broker.managed_files:
+                if managed_file not in extracted_pathnames:
+                    self.logger.info("Deleting file %s from filesystem...", managed_file)
+                    os.remove(os.path.join(self.working_dir, managed_file))
         users: list[dict[str, str]] = revision["meta"]["users"]
         name = ";".join(f"{user.get("last_name", "")}, {user.get("first_name", "")}" for user in users)
         email = ";".join(user["email"] for user in revision["meta"]["users"])
         # _git("switch", self.overleaf_branch)
-        self.git_broker.add_all()
+        if not self.git_broker.add_all():
+            self.logger.info("No changes to commit.")
         self.git_broker.commit(
-            msg=f"{"old" if merge_old else revision['fromV']}->{toV}",
+            msg=f"{"old" if init else revision['fromV']}->{revision_to_migrate}",
             ts=revision["meta"]["end_ts"] // 1000,
             name=name,
             email=email,
         )
-        self.logger.info("Revision %s migrated.", toV)
+        self.logger.info("Revision %s migrated.", revision_to_migrate)
         return ts
 
     def _migrate_revisions_zip(self, revisions: list[dict]) -> None:
@@ -706,7 +712,7 @@ class OverleafProject:
 
         self.logger.info("Migrating all older revisions into the first git revision...")
         self.git_broker.switch_to_overleaf_branch(create=True)
-        self._migrate_revision_zip(updates[-1], merge_old=True)
+        self._migrate_revision_zip(updates[-1], init=True)
         self.logger.info("Migrating the rest of the revisions...")
         self._migrate_revisions_zip(updates[:-1])
         self.git_broker.switch_to_working_branch(force=True)
@@ -714,6 +720,8 @@ class OverleafProject:
     def _git_repo_init_diff(self) -> None:
         self.logger.info("Migrating all revisions...")
         self.git_broker.switch_to_overleaf_branch(create=True)
+        if self.overleaf_broker.updates[-1]["fromV"] > 0:
+            self._migrate_revision_zip(self.overleaf_broker.updates[-1], init=True)
         self._migrate_revisions_diff(self.overleaf_broker.updates)
         self.git_broker.switch_to_working_branch(force=True)
 
