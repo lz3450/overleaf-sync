@@ -18,6 +18,7 @@ import json
 import zipfile
 import websocket
 import urllib.parse
+import traceback
 
 from itertools import takewhile
 from enum import IntEnum, unique
@@ -66,7 +67,8 @@ class ErrorNumber(IntEnum):
     GIT_ERROR = 5
     PULL_ERROR = 6
     PUSH_ERROR = 7
-    REINITIALIZATION_ERROR = 8
+    WORKING_TREE_DIRTY_ERROR = 8
+    REINITIALIZATION_ERROR = 9
 
 
 class GitBroker:
@@ -83,7 +85,8 @@ class GitBroker:
         try:
             output = subprocess.run(cmd, capture_output=True, text=True, check=check).stdout.strip()
         except subprocess.CalledProcessError as e:
-            LOGGER.error("Git command failed: %s\noutput:\n%s", e, e.output)
+            LOGGER.error("Git command failed: %s\noutput:\n%s\n---", e, e.output)
+            traceback.print_stack()
             exit(ErrorNumber.GIT_ERROR)
         LOGGER.debug("Git output: \n%s", output)
         return output
@@ -110,7 +113,7 @@ class GitBroker:
         branches = [_.lstrip("*").strip() for _ in self("branch", "--list").splitlines()]
         if not (self.overleaf_branch in branches and self.working_branch in branches):
             LOGGER.error(
-                "Branches `%s` or `%s` are missing. Working directory,  Please reinitialize the project.",
+                "Branches `%s` or `%s` are missing. Working directory corrupted. Please reinitialize the project.",
                 self.overleaf_branch,
                 self.working_branch,
             )
@@ -153,12 +156,14 @@ class GitBroker:
         else:
             self("switch", self.overleaf_branch)
 
+    def update_working_branch(self) -> None:
+        self("branch", "-f", self.working_branch, self.overleaf_branch)
+        self("tag", "-f", self.WORKING_BRANCH_START_COMMIT_TAG, self.overleaf_branch)
+
     def switch_to_working_branch(self, update=False) -> None:
         if update:
-            self("switch", "-C", self.working_branch, self.overleaf_branch)
-            self("tag", "-f", self.WORKING_BRANCH_START_COMMIT_TAG)
-        else:
-            self("switch", self.working_branch)
+            self.update_working_branch()
+        self("switch", self.working_branch)
 
     @property
     def local_overleaf_rev(self) -> int:
@@ -188,16 +193,19 @@ class GitBroker:
         return not self("log", f"{self.working_branch}..{self.overleaf_branch}")
 
     @property
-    def is_diff_working_overleaf(self) -> bool:
+    def is_identical_working_overleaf(self) -> bool:
         return not self("diff-tree", "-r", self.working_branch, self.overleaf_branch)
 
     @property
     def current_branch(self) -> str:
         return self("branch", "--show-current")
 
-    def stash_working(self) -> None:
-        assert self.current_branch == self.working_branch
-        self("stash")
+    def stash_working(self) -> bool:
+        if not self.current_branch == self.working_branch:
+            return False
+        if self("stash").startswith("No local changes to save"):
+            return False
+        return True
 
     def stash_pop_working(self) -> None:
         assert self.current_branch == self.working_branch
@@ -205,7 +213,7 @@ class GitBroker:
 
     @property
     def working_branch_status(self) -> list[str]:
-        assert self("branch", "--show-current") == self.working_branch
+        assert self.current_branch == self.working_branch
         return self("diff", "--name-status", self.starting_working_commit).splitlines()
 
 
