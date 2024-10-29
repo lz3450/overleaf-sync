@@ -34,7 +34,7 @@ OVERLEAF_SYNC_DIR_NAME = ".overleaf-sync"
 
 LOGGER = logging.getLogger(__name__)
 LOGGER_FORMATTER = logging.Formatter("[%(asctime)s] [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
-LOG_DIR = ".overleaf-sync-logs"
+LOG_DIR = os.path.join(OVERLEAF_SYNC_DIR_NAME, "logs")
 
 
 def setup_logger(logger: logging.Logger, debug: bool) -> None:
@@ -543,7 +543,7 @@ class OverleafProject:
             name=name,
             email=email,
         )
-        LOGGER.info("Version %s migrated.", toV)
+        LOGGER.info("Revision %s migrated.", toV)
         return ts
 
     def _migrate_revisions_zip(self, revisions: list[dict]) -> None:
@@ -599,18 +599,20 @@ class OverleafProject:
             path = os.path.join(self.working_dir, pathname)
             match operation:
                 case "added" | "edited":
-                    LOGGER.debug("Adding/Editing %s...", item["pathname"])
+                    LOGGER.debug("Add/Edit %s...", item["pathname"])
                     os.makedirs(os.path.dirname(path), exist_ok=True)
                     with open(path, "w") as f:
                         f.write(_diff_to_content(diff))
                 case "removed":
+                    LOGGER.debug("Remove %s...", item["pathname"])
                     os.remove(path)
                 case "renamed":
+                    LOGGER.debug("Rename %s...", item["pathname"])
                     os.rename(path, os.path.join(self.working_dir, item["newPathname"]))
                 case _:
                     raise ValueError(f"Unsupported operation: {item['operation']}")
 
-        LOGGER.info("Migrating (diff) revision from %d to %d...", fromV, toV)
+        LOGGER.debug("Migrating (diff) revision %d->%d...", fromV, toV)
         # Operate files on filesystem
         filetree_diff = self.overleaf_broker.filetree_diff(fromV, toV)
         for item in filetree_diff:
@@ -622,7 +624,7 @@ class OverleafProject:
         # Make git commit
         self.git_broker.add_all()
         self.git_broker.commit(f"{fromV}->{toV}", ts, name, email)
-        LOGGER.info("Revision %d->%d migrated.", fromV, toV)
+        LOGGER.debug("Revision %d->%d migrated.", fromV, toV)
 
     def _migrate_revisions_diff(self, revisions: list[dict]) -> None:
         """
@@ -630,8 +632,9 @@ class OverleafProject:
         Note that this function is **not** responsible for switching branch.
         """
         revision_length = len(revisions)
+        log_msg = f"Migrating overleaf revision %{len(str(revision_length))}d/{revision_length}: %d->%d"
         for i, rev in enumerate(reversed(revisions)):
-            LOGGER.info("%d revision(s) to be migrated (diff).", revision_length - i)
+            LOGGER.info(log_msg, i + 1, rev["fromV"], rev["toV"])
             self._migrate_revision_diff(rev)
 
     @property
@@ -703,7 +706,7 @@ class OverleafProject:
         # Get all new overleaf revisions
         upcoming_overleaf_rev = list(takewhile(lambda rev: rev["toV"] > local_overleaf_rev, remote_overleaf_updates))
 
-        LOGGER.info(
+        LOGGER.debug(
             "%d upcoming revisions: %s",
             len(upcoming_overleaf_rev),
             ", ".join(f"{rev["fromV"]}->{rev["toV"]}" for rev in reversed(upcoming_overleaf_rev)),
