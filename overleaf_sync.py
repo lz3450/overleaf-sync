@@ -174,16 +174,11 @@ class GitBroker:
     def local_overleaf_rev(self) -> int:
         return int(self("log", "-1", "--pretty=%B", self.overleaf_branch).split("->")[1])
 
-    @property
-    def local_overleaf_previous_rev(self) -> int:
-        return int(self("log", "-1", "--pretty=%B", self.overleaf_branch).split("->")[0])
-
     def reset_hard(self, n: int) -> None:
         self("reset", "--hard", f"HEAD~{n}")
 
     def rebase_working_branch(self) -> bool:
         # Rebase working branch to overleaf branch
-        self._update_working_branch_start_commit()
         result = self("rebase", self.overleaf_branch, self.working_branch, check=False)
         if "CONFLICT" in result:
             self.logger.error(
@@ -193,6 +188,7 @@ class GitBroker:
                 result,
             )
             return False
+        self._update_working_branch_start_commit()
         return True
 
     @property
@@ -816,11 +812,17 @@ class OverleafProject:
         self.logger.info("Pulling changes from Overleaf...")
 
         # Get all new overleaf revisions
+        local_overleaf_rev = self.git_broker.local_overleaf_rev
         upcoming_overleaf_rev = list(
             takewhile(
-                lambda rev: rev["fromV"] >= self.git_broker.local_overleaf_previous_rev, self.overleaf_broker.updates
+                lambda rev: rev["fromV"] >= local_overleaf_rev or rev["toV"] > local_overleaf_rev, self.overleaf_broker.updates
             )
         )
+
+        # The corresponding remove overleaf revision of latest local overleaf revision may changed after the migration
+        # For example, 63->67 may become 63->64, 64->68
+        if upcoming_overleaf_rev[-1]["fromV"] < local_overleaf_rev:
+            upcoming_overleaf_rev[-1]["fromV"] = local_overleaf_rev
 
         self.logger.debug(
             "%d upcoming revisions: %s",
@@ -829,16 +831,12 @@ class OverleafProject:
         )
 
         if dry_run:
+            if stash:
+                self.logger.info("Pop'ing stashed changes...")
+                self.git_broker.stash_pop_working()
             return ErrorNumber.OK
 
-        # The corresponding remove overleaf revision of latest local overleaf revision may changed after the migration
-        # For example, 63->67 may become 63->64, 64->68
         self.git_broker.switch_to_overleaf_branch()
-        if upcoming_overleaf_rev[0]["toV"] != self.git_broker.local_overleaf_rev:
-            self.git_broker.reset_hard(1)
-        else:
-            del upcoming_overleaf_rev[0]
-
         self._migrate_revisions_diff(upcoming_overleaf_rev)
         self.logger.debug("Current branch: %s", self.git_broker.current_branch)
 
