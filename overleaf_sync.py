@@ -244,7 +244,7 @@ class OverleafBroker:
         self._updates_min_count: int = 100
         self._updates: list[dict] | None = None
         self._csrf_token: str | None = None
-        self._download_zip_ts: int = 0
+        self._download_zip_ts: float = 0
         self._original_file_ids: dict | None = None
         self._root_folder_id: str | None = None
         self._indexed_file_ids: dict[str, dict[str, str]] | None = None
@@ -814,9 +814,7 @@ class OverleafProject:
         # Get all new overleaf revisions
         local_overleaf_rev = self.git_broker.local_overleaf_rev
         upcoming_overleaf_rev = list(
-            takewhile(
-                lambda rev: rev["fromV"] >= local_overleaf_rev or rev["toV"] > local_overleaf_rev, self.overleaf_broker.updates
-            )
+            takewhile(lambda rev: rev["toV"] > local_overleaf_rev, self.overleaf_broker.updates)
         )
 
         # The corresponding remove overleaf revision of latest local overleaf revision may changed after the migration
