@@ -445,8 +445,6 @@ class OverleafBroker:
                     if response_name == "joinProjectResponse":
                         break
         ws.close()
-        with open("ids.json", "w") as f:
-            f.write(data)
         self._original_file_ids = data_json["args"][0]["project"]["rootFolder"][0]
 
         with open(self.ids_file, "w") as f:
@@ -616,12 +614,12 @@ class OverleafProject:
                     self.logger.debug("Deleting file %s from filesystem...", managed_file)
                     self._remove(managed_file)
         users: list[dict[str, str]] = revision["meta"]["users"]
-        name = ";".join(f"{user.get("last_name", "")}, {user.get("first_name", "")}" for user in users)
-        email = ";".join(user["email"] for user in revision["meta"]["users"])
+        name = "; ".join(f"{user.get("last_name", "")}, {user.get("first_name", "")}" for user in users)
+        email = "; ".join(user["email"] for user in revision["meta"]["users"])
         if not self.git_broker.add_all():
             self.logger.debug("No changes to commit.")
         self.git_broker.commit(
-            msg=f"{revision_to_migrate}",
+            msg=f"{revision_to_migrate}" if init else f"{revision['fromV']}->{revision['toV']}",
             ts=revision["meta"]["end_ts"] // 1000,
             name=name,
             email=email,
