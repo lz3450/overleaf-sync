@@ -172,6 +172,7 @@ class GitBroker:
 
     @property
     def local_overleaf_rev(self) -> int:
+        """The latest overleaf revision in local git repository"""
         return int(self("log", "-1", "--pretty=%B", self.overleaf_branch).split("->")[1])
 
     def reset_hard(self, n: int) -> None:
@@ -313,6 +314,11 @@ class OverleafBroker:
         with open(self.updates_file, "w") as f:
             json.dump(self._updates, f)
         return self._updates
+
+    @property
+    def remote_overleaf_rev(self) -> int:
+        """The latest overleaf revision in remote Overleaf project"""
+        return self.updates[0]["toV"]
 
     def refresh_updates(self) -> None:
         self._updates = None
@@ -723,10 +729,6 @@ class OverleafProject:
                 self._migrate_revision_zip(rev)
 
     @property
-    def remote_overleaf_rev(self) -> int:
-        return self.overleaf_broker.updates[0]["toV"]
-
-    @property
     def new_working_commit_exists(self) -> bool:
         return self.git_broker.current_working_commit != self.git_broker.starting_working_commit
 
@@ -778,7 +780,7 @@ class OverleafProject:
     @property
     def is_there_new_remote_overleaf_rev(self) -> bool:
         local_overleaf_rev = self.git_broker.local_overleaf_rev
-        remote_overleaf_rev = self.remote_overleaf_rev
+        remote_overleaf_rev = self.overleaf_broker.remote_overleaf_rev
         self.logger.info("Fetched remote/local overleaf revision: %d/%d", remote_overleaf_rev, local_overleaf_rev)
         assert remote_overleaf_rev >= local_overleaf_rev
         return remote_overleaf_rev > local_overleaf_rev
@@ -812,19 +814,19 @@ class OverleafProject:
 
         # Get all new overleaf revisions
         local_overleaf_rev = self.git_broker.local_overleaf_rev
-        upcoming_overleaf_rev = list(
+        upcoming_overleaf_revs = list(
             takewhile(lambda rev: rev["toV"] > local_overleaf_rev, self.overleaf_broker.updates)
         )
 
         # The corresponding remove overleaf revision of latest local overleaf revision may changed after the migration
         # For example, 63->67 may become 63->64, 64->68
-        if upcoming_overleaf_rev[-1]["fromV"] < local_overleaf_rev:
-            upcoming_overleaf_rev[-1]["fromV"] = local_overleaf_rev
+        if upcoming_overleaf_revs[-1]["fromV"] < local_overleaf_rev:
+            upcoming_overleaf_revs[-1]["fromV"] = local_overleaf_rev
 
         self.logger.debug(
             "%d upcoming revisions: %s",
-            len(upcoming_overleaf_rev),
-            ", ".join(f"{rev["fromV"]}->{rev["toV"]}" for rev in reversed(upcoming_overleaf_rev)),
+            len(upcoming_overleaf_revs),
+            ", ".join(f"{rev["fromV"]}->{rev["toV"]}" for rev in reversed(upcoming_overleaf_revs)),
         )
 
         if dry_run:
@@ -834,7 +836,7 @@ class OverleafProject:
             return ErrorNumber.OK
 
         self.git_broker.switch_to_overleaf_branch()
-        self._migrate_revisions_diff(upcoming_overleaf_rev)
+        self._migrate_revisions_diff(upcoming_overleaf_revs)
         self.logger.debug("Current branch: %s", self.git_broker.current_branch)
 
         if rebase:
