@@ -624,7 +624,7 @@ class OverleafProject:
             name=name,
             email=email,
         )
-        self.logger.info("Revision %s migrated.", revision_to_migrate)
+        self.logger.debug("Revision %s migrated.", revision_to_migrate)
 
     def _migrate_revisions_zip(self, revisions: list[dict]) -> None:
         """
@@ -736,16 +736,17 @@ class OverleafProject:
         # Fetch one more revision: old->xxx
         updates = updates[: n_revisions + 1 if n_revisions > 0 or n_revisions + 1 > updates_length else None]
 
-        self.logger.info("Migrating all older revisions into the first git revision...")
+        self.logger.info("Migrating (ZIP) all revisions...")
         self.git_broker.switch_to_overleaf_branch(create=True)
+        self.logger.info("Migrating the initial overleaf revision...")
         self._migrate_revision_zip(updates[-1], init=True)
-        self.logger.info("Migrating the rest of the revisions...")
         self._migrate_revisions_zip(updates[:-1])
         self.git_broker.switch_to_working_branch(force=True)
 
     def _git_repo_init_diff(self) -> None:
-        self.logger.info("Migrating all revisions...")
+        self.logger.info("Migrating (diff) all revisions...")
         self.git_broker.switch_to_overleaf_branch(create=True)
+        self.logger.info("Migrating the initial overleaf revision...")
         self._migrate_revision_zip(self.overleaf_broker.updates[-1], init=True)
         self._migrate_revisions_diff(self.overleaf_broker.updates)
         self.git_broker.switch_to_working_branch(force=True)
