@@ -178,8 +178,11 @@ class GitBroker:
     def reset_hard(self, n: int) -> None:
         self("reset", "--hard", f"HEAD~{n}")
 
+    def tag_working_branch(self, tag: str) -> None:
+        self("tag", tag, self.working_branch)
+
     def rebase_working_branch(self) -> bool:
-        # Rebase working branch to overleaf branch
+        """Rebase working branch to overleaf branch"""
         result = self("rebase", self.overleaf_branch, self.working_branch, check=False)
         if "CONFLICT" in result:
             self.logger.error(
@@ -866,6 +869,7 @@ class OverleafProject:
         def _finalize_push() -> None:
             # Verify the push
             assert self.git_broker.is_identical_working_overleaf
+            self.git_broker.tag_working_branch(str(self.git_broker.local_overleaf_rev))
             self.git_broker.rebase_working_branch()
             # self.git_broker.switch_to_working_branch(update=True)
 
