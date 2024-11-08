@@ -582,6 +582,7 @@ class OverleafProject:
         self.working_dir = working_dir
         self.overleaf_sync_dir = os.path.join(self.working_dir, OVERLEAF_SYNC_DIR_NAME)
         self.config_file = os.path.join(self.overleaf_sync_dir, "config.json")
+        self._initialized = False
 
         # Initialize git broker
         self.git_broker = GitBroker(self.working_dir)
@@ -591,9 +592,14 @@ class OverleafProject:
             return
 
         self.sanity_check()
+        self._initialized = True
         with open(self.config_file, "r") as f:
             config: dict[str, str] = json.load(f)
         self.overleaf_broker.login(config["username"], config["password"], config["project_id"])
+
+    @property
+    def initialized(self) -> bool:
+        return self._initialized
 
     def sanity_check(self) -> None:
         self.logger.debug("Sanity checking...")
@@ -822,7 +828,9 @@ class OverleafProject:
                 self.git_broker.stash_pop_working()
 
     def pull(self, stash=True, rebase=True, switch=True, dry_run=False) -> ErrorNumber:
-        self.sanity_check()
+        if not self.initialized:
+            self.logger.error("Project not initialized. Please run `init` first.")
+            return ErrorNumber.NOT_INITIALIZED_ERROR
 
         if not self.is_there_new_remote_overleaf_rev:
             self.logger.info("No new changes to pull.")
@@ -875,7 +883,9 @@ class OverleafProject:
         return ErrorNumber.OK
 
     def push(self, pull=True, stash=True, force=False, dry_run=False) -> ErrorNumber:
-        self.sanity_check()
+        if not self.initialized:
+            self.logger.error("Project not initialized. Please run `init` first.")
+            return ErrorNumber.NOT_INITIALIZED_ERROR
 
         # TODO: Implement prune
 
