@@ -211,7 +211,7 @@ class GitBroker:
     def stash_working(self) -> bool:
         if not self.current_branch == self.working_branch:
             return False
-        if self("stash").startswith("No local changes to save"):
+        if self("stash", "-u").startswith("No local changes to save"):
             return False
         return True
 
@@ -222,7 +222,7 @@ class GitBroker:
     @property
     def working_branch_status(self) -> list[str]:
         assert self.current_branch == self.working_branch
-        return self("diff", "--name-status", self.starting_working_commit).splitlines()
+        return self("diff", "--name-status", self.WORKING_BRANCH_START_COMMIT_TAG).splitlines()
 
 
 class OverleafBroker:
@@ -809,6 +809,14 @@ class OverleafProject:
             exit(ErrorNumber.WORKING_TREE_DIRTY_ERROR)
         return stash
 
+    def _pull_push_stash_pop(self, stash: bool) -> None:
+        if stash:
+            if self.git_broker.current_branch != self.git_broker.working_branch:
+                self.logger.warning("Stash not pop'ed. Please run `git stash pop` to restore changes.")
+            else:
+                self.logger.info("Pop'ing stashed changes...")
+                self.git_broker.stash_pop_working()
+
     def pull(self, stash=True, rebase=True, switch=True, dry_run=False) -> ErrorNumber:
         self.sanity_check()
 
@@ -858,13 +866,7 @@ class OverleafProject:
             self.git_broker.switch_to_working_branch()
 
         # There are stashed changes
-        if stash:
-            if self.git_broker.current_branch != self.git_broker.working_branch or not rebase:
-                self.logger.warning("Stash not pop'ed. Please run `git stash pop` to restore changes.")
-                return ErrorNumber.GIT_ERROR
-            else:
-                self.logger.info("Pop'ing stashed changes...")
-                self.git_broker.stash_pop_working()
+        self._pull_push_stash_pop(stash)
 
         return ErrorNumber.OK
 
@@ -878,7 +880,6 @@ class OverleafProject:
             assert self.git_broker.is_identical_working_overleaf
             self.git_broker.tag_working_branch(str(self.git_broker.local_overleaf_rev))
             self.git_broker.rebase_working_branch()
-            # self.git_broker.switch_to_working_branch(update=True)
 
         # Check if there are new changes to push
         if not self.new_working_commit_exists:
@@ -933,8 +934,10 @@ class OverleafProject:
         # It is possible that the refresh happened after changes from other remote overleaf users
         # The push verification may fail in this case
         self.overleaf_broker.refresh_updates()
-        self.pull(stash=True, rebase=False, switch=False)
+        self.overleaf_broker.refresh_indexed_file_ids()
+        self.pull(stash=False, rebase=False, switch=False)
         _finalize_push()
+        self._pull_push_stash_pop(stash)
 
         return ErrorNumber.OK
 
