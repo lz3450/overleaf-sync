@@ -422,7 +422,11 @@ class OverleafBroker:
             "Referer": self.project_url,
         }
         response = self._get(url, headers=headers)
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except requests.HTTPError as e:
+            self.logger.error("Failed to download binary file %s:\n%s", pathname, e)
+            exit(ErrorNumber.HTTP_ERROR)
         if dirname := os.path.dirname(pathname):
             os.makedirs(dirname, exist_ok=True)
         with open(os.path.join(self.working_dir, pathname), "wb") as f:
