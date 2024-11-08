@@ -38,15 +38,16 @@ LOG_DATEFMT = "%Y-%m-%d %H:%M:%S"
 LOG_DIR = os.path.join(OVERLEAF_SYNC_DIR_NAME, "logs")
 
 
-def setup_logger(logger: logging.Logger, debug: bool) -> None:
+def setup_logger(logger: logging.Logger, debug: bool, log_file: bool = True) -> None:
     logger.setLevel(logging.DEBUG)
     ch = logging.StreamHandler()
     ch.setLevel(logging.DEBUG if debug else logging.INFO)
     ch.setFormatter(logging.Formatter(LOG_FORMAT, datefmt=LOG_DATEFMT))
     logger.addHandler(ch)
 
+    if not log_file:
+        return
 
-def setup_file_logger(logger: logging.Logger) -> None:
     os.makedirs(LOG_DIR, exist_ok=True)
     with open(os.path.join(LOG_DIR, ".gitignore"), "w") as f:
         f.write("*")
@@ -958,13 +959,13 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    # setup_logger(logging.getLogger(GitBroker.__qualname__), args.debug, args.log)
+    # setup_logger(logging.getLogger(OverleafBroker.__qualname__), args.debug, args.log)
+    # setup_logger(logging.getLogger(OverleafProject.__qualname__), args.debug, args.log)
+
     setup_logger(logging.getLogger(GitBroker.__qualname__), args.debug)
     setup_logger(logging.getLogger(OverleafBroker.__qualname__), args.debug)
     setup_logger(logging.getLogger(OverleafProject.__qualname__), args.debug)
-    if args.log:
-        setup_file_logger(logging.getLogger(GitBroker.__qualname__))
-        setup_file_logger(logging.getLogger(OverleafBroker.__qualname__))
-        setup_file_logger(logging.getLogger(OverleafProject.__qualname__))
 
     project = OverleafProject()
 
