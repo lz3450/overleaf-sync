@@ -759,6 +759,12 @@ class OverleafProject:
 
     def init(self, username: str, password: str, project_id: str) -> ErrorNumber:
         self.logger.info("Initializing working directory...")
+        # Check if the working directory is empty
+        if os.listdir(self.working_dir):
+            self.logger.error(
+                "Working directory `%s` is not empty. Please clean up the directory first.", self.working_dir
+            )
+            exit(ErrorNumber.WORKING_TREE_DIRTY_ERROR)
         # Create overleaf-sync directory
         os.makedirs(self.overleaf_sync_dir, exist_ok=True)
         # Write `config.json`
