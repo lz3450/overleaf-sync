@@ -668,8 +668,8 @@ class OverleafProject:
         toV = revision["toV"]
         ts = revision["meta"]["end_ts"] // 1000
         users: list[dict[str, str]] = revision["meta"]["users"]
-        name = ";".join(f"{user.get("last_name", "")}, {user.get("first_name", "")}" for user in users)
-        email = ";".join(user["email"] for user in revision["meta"]["users"])
+        name = "; ".join(f"{user.get("last_name", "")}, {user.get("first_name", "")}" for user in users)
+        email = "; ".join(user["email"] for user in revision["meta"]["users"])
 
         def _diff_to_content(diff: list[dict]) -> str:
             exclusive_status = {"u", "i", "d"}
