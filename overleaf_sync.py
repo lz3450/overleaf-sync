@@ -805,7 +805,7 @@ class OverleafProject:
         assert remote_overleaf_rev >= local_overleaf_rev
         return remote_overleaf_rev > local_overleaf_rev
 
-    def _pull_push_stash(self, stash: bool) -> bool:
+    def _pull_push_stash(self, stash=True) -> bool:
         if stash:
             self.logger.info("Stashing changes before pulling/pushing.")
             self.git_broker.switch_to_working_branch()
@@ -827,21 +827,8 @@ class OverleafProject:
                 self.logger.info("Pop'ing stashed changes...")
                 self.git_broker.stash_pop_working()
 
-    def pull(self, stash=True, rebase=True, switch=True, dry_run=False) -> ErrorNumber:
-        if not self.initialized:
-            self.logger.error("Project not initialized. Please run `init` first.")
-            return ErrorNumber.NOT_INITIALIZED_ERROR
-
-        if not self.is_there_new_remote_overleaf_rev:
-            self.logger.info("No new changes to pull.")
-            return ErrorNumber.OK
-
-        # Perform stash before pulling to prevent uncommitted changes in working branch
-        # Reuse `stash` to check if there are stashed changes
-        stash = self._pull_push_stash(stash)
-
-        self.logger.info("Pulling changes from Overleaf...")
-
+    def _pull(self, dry_run=False) -> None:
+        """Perform pull operation"""
         # Get all new overleaf revisions
         local_overleaf_rev = self.git_broker.local_overleaf_rev
         upcoming_overleaf_revs = list(
@@ -860,63 +847,36 @@ class OverleafProject:
         )
 
         if dry_run:
-            if stash:
-                self.logger.info("Pop'ing stashed changes...")
-                self.git_broker.stash_pop_working()
-            return ErrorNumber.OK
+            return
 
         self.git_broker.switch_to_overleaf_branch()
         self._migrate_revisions_diff(upcoming_overleaf_revs)
         self.logger.debug("Current branch: %s", self.git_broker.current_branch)
 
-        if rebase:
-            self.logger.debug("Rebasing working branch after pulling...")
-            # Reuse `rebase` to check if there are conflicts
-            rebase = self.git_broker.rebase_working_branch()
-        elif switch:
-            self.logger.debug("Switching back to working branch without rebasing after pulling...")
-            self.git_broker.switch_to_working_branch()
-
-        # There are stashed changes
-        self._pull_push_stash_pop(stash)
-
-        return ErrorNumber.OK
-
-    def push(self, pull=True, stash=True, force=False, dry_run=False) -> ErrorNumber:
+    def pull(self, stash=True, _rebase=True, _switch=True, dry_run=False) -> ErrorNumber:
         if not self.initialized:
             self.logger.error("Project not initialized. Please run `init` first.")
             return ErrorNumber.NOT_INITIALIZED_ERROR
 
-        # TODO: Implement prune
-
-        def _finalize_push() -> None:
-            # Verify the push
-            assert self.git_broker.is_identical_working_overleaf
-            self.git_broker.tag_working_branch(str(self.git_broker.local_overleaf_rev))
-            self.git_broker.rebase_working_branch()
-
-        # Check if there are new changes to push
-        if not self.new_working_commit_exists:
-            self.logger.info("No new changes to push.")
+        if not self.is_there_new_remote_overleaf_rev:
+            self.logger.info("No new changes to pull.")
             return ErrorNumber.OK
 
-        # Perform force push
-        if force:
-            self.logger.warning("Force pushing changes to Overleaf project...")
-            raise NotImplementedError("Force push is not implemented yet.")
-
-        # Perform pull before pushing to prevent new changes in remote overleaf
-        if pull:
-            self.pull()
-        elif self.is_there_new_remote_overleaf_rev:
-            # Check if there are new changes in remote overleaf
-            self.logger.error("There are new remote overleaf revisions. Please pull first.")
-            return ErrorNumber.PUSH_ERROR
-
-        # Perform stash before pushing to prevent uncommitted changes in working branch
+        # Perform stash before pulling to prevent uncommitted changes in working branch
         # Reuse `stash` to check if there are stashed changes
         stash = self._pull_push_stash(stash)
+        self.logger.info("Pulling changes from Overleaf...")
+        self._pull(dry_run=dry_run)
+        self.logger.debug("Rebasing working branch after pulling...")
+        if self.git_broker.rebase_working_branch():
+            self.logger.debug("Switching back to working branch without rebasing after pulling...")
+            self.git_broker.switch_to_working_branch()
+        self._pull_push_stash_pop(stash)
 
+        return ErrorNumber.OK
+
+    def _push(self, prune=False, dry_run=False) -> None:
+        """Perform push operation"""
         self.git_broker.switch_to_working_branch()
         delete_list: list[str] = []
         upload_list: list[str] = []
@@ -941,6 +901,9 @@ class OverleafProject:
                 case _:
                     raise ValueError(f"Unsupported status: {status}")
 
+        if prune:
+            raise NotImplementedError("Prune is not implemented yet.")
+
         for pathname in delete_list:
             self.overleaf_broker.delete(pathname, dry_run)
         for pathname in upload_list:
@@ -949,10 +912,41 @@ class OverleafProject:
         # The push verification may fail in this case
         self.overleaf_broker.refresh_updates()
         self.overleaf_broker.refresh_indexed_file_ids()
-        self.pull(stash=False, rebase=False, switch=False)
-        _finalize_push()
+
+    def push(self, prune=False, dry_run=False) -> ErrorNumber:
+        if not self.initialized:
+            self.logger.error("Project not initialized. Please run `init` first.")
+            return ErrorNumber.NOT_INITIALIZED_ERROR
+
+        # TODO: Implement prune
+
+        # Check if there are new changes to push
+        if not self.new_working_commit_exists:
+            self.logger.info("No new changes to push.")
+            return ErrorNumber.OK
+
+        # Check if there are new changes in remote overleaf
+        if self.is_there_new_remote_overleaf_rev:
+            self.logger.error("There are new remote overleaf revisions. Please pull first.")
+            return ErrorNumber.PUSH_ERROR
+
+        # Perform stash before pushing to prevent uncommitted changes in working branch
+        # Reuse `stash` to check if there are stashed changes
+        stash = self._pull_push_stash()
+        self._push(prune=prune, dry_run=dry_run)
+        self._pull(dry_run=dry_run)
+        assert self.git_broker.is_identical_working_overleaf
+        self.git_broker.tag_working_branch(str(self.git_broker.local_overleaf_rev))
+        self.git_broker.rebase_working_branch()
         self._pull_push_stash_pop(stash)
 
+        return ErrorNumber.OK
+
+    def sync(self) -> ErrorNumber:
+        if (result := self.pull()) != ErrorNumber.OK:
+            return result
+        if (result := self.push()) != ErrorNumber.OK:
+            return result
         return ErrorNumber.OK
 
 
@@ -969,16 +963,16 @@ if __name__ == "__main__":
     init_parser.add_argument("-i", "--project-id", required=True, help="Overleaf project ID")
 
     pull_parser = subparsers.add_parser("pull", help="Pull changes from Overleaf project")
-    pull_parser.add_argument("-d", "--dry-run", action="store_true", help="Dry run mode")
     pull_parser.add_argument(
         "-n", "--no-stash", action="store_true", help="Do not stash changes in the working branch before "
     )
+    pull_parser.add_argument("-d", "--dry-run", action="store_true", help="Dry run mode")
 
     push_parser = subparsers.add_parser("push", help="Push changes to Overleaf project")
-    push_parser.add_argument("-P", "--no-pull", action="store_true", help="Pull remote overleaf changes before pushing")
-    push_parser.add_argument("-f", "--force", action="store_true", help="Force push changes to Overleaf project")
     push_parser.add_argument("-p", "--prune", action="store_true", help="Prune empty folders")
     push_parser.add_argument("-d", "--dry-run", action="store_true", help="Dry run mode")
+
+    sync_parser = subparsers.add_parser("sync", help="Sync changes between Overleaf project and local git repo")
 
     args = parser.parse_args()
 
@@ -998,6 +992,8 @@ if __name__ == "__main__":
         case "pull":
             exit(project.pull(stash=(not args.no_stash), dry_run=args.dry_run))
         case "push":
-            exit(project.push(pull=(not args.no_pull), force=args.force, dry_run=args.dry_run))
+            exit(project.push(prune=args.prune, dry_run=args.dry_run))
+        case "sync":
+            exit(project.sync())
         case _:
             parser.print_help()
