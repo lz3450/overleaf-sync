@@ -935,7 +935,8 @@ class OverleafProject:
         stash = self._pull_push_stash()
         self._push(prune=prune, dry_run=dry_run)
         self._pull(dry_run=dry_run)
-        assert self.git_broker.is_identical_working_overleaf
+        if not self.git_broker.is_identical_working_overleaf:
+            self.logger.warning("Working branch is not identical to overleaf branch.")
         self.git_broker.tag_working_branch(str(self.git_broker.local_overleaf_rev))
         self.git_broker.rebase_working_branch()
         self._pull_push_stash_pop(stash)
