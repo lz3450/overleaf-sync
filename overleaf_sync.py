@@ -301,19 +301,23 @@ class OverleafBroker:
         if self._updates:
             return self._updates
 
-        while True:
-            url = f"{PROJECTS_URL}/{self.project_id}/updates?min_count={self._updates_min_count}"
-            headers = {
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-            }
-            self.logger.debug("Fetching project updates from %s...", url)
+        url = f"{PROJECTS_URL}/{self.project_id}/updates"
+        headers = {
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+        }
+        self.logger.debug("Fetching project updates from %s...", url)
+        response = self._get(url, headers=headers)
+        response_json: dict = response.json()
+        self._updates = response_json["updates"]
+        if not self._updates:
+            raise ValueError("Failed to fetch project updates.")
+
+        while (next_before_ts := response_json.get("nextBeforeTimestamp", -1)) > 0:
+            url = f"{PROJECTS_URL}/{self.project_id}/updates?before={next_before_ts}"
+            self.logger.debug("Fetching updates before %d...", next_before_ts)
             response = self._get(url, headers=headers)
-            self._updates = json.loads(response.text)["updates"]
-            if not self._updates:
-                raise ValueError("Failed to fetch project updates.")
-            if self._updates[-1]["fromV"] == 0:
-                break
-            self._updates_min_count += 100
+            response_json = response.json()
+            self._updates.extend(response_json["updates"])
 
         with open(self.updates_file, "w") as f:
             json.dump(self._updates, f)
