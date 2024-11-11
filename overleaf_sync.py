@@ -389,7 +389,7 @@ class OverleafBroker:
             "X-CSRF-TOKEN": self.csrf_token,
         }
         response = self._get(url, headers=headers)
-        return json.loads(response.text)["diff"]
+        return response.json()["diff"]
 
     def diff(self, from_: int, to_: int, pathname: str) -> list[dict]:
         self.logger.debug("Fetching diff of file %s from %d to %d...", pathname, from_, to_)
@@ -401,7 +401,7 @@ class OverleafBroker:
         }
         response = self._get(url, headers=headers)
         response.raise_for_status()
-        return json.loads(response.text)["diff"]
+        return response.json()["diff"]
 
     def _find_id_type(self, path: str) -> tuple[str, str] | tuple[None, None]:
         self.logger.debug("Finding id for `%s`...", path)
