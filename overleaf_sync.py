@@ -185,6 +185,7 @@ class GitBroker:
     def rebase_working_branch(self) -> bool:
         """Rebase working branch to overleaf branch"""
         result = self("rebase", self.overleaf_branch, self.working_branch, check=False)
+        self._update_working_branch_start_commit()
         if "CONFLICT" in result:
             self.logger.error(
                 "Failed to rebase `%s` to `%s`.\n" "%s\n" "Fix conflicts and run `git rebase --continue`.",
@@ -193,7 +194,6 @@ class GitBroker:
                 result,
             )
             return False
-        self._update_working_branch_start_commit()
         return True
 
     @property
