@@ -406,7 +406,7 @@ class OverleafBroker:
         response = self._get(url, headers=headers)
         return response.json()["diff"]
 
-    def _find_id_type(self, path: str) -> tuple[str, str] | tuple[None, None]:
+    def find_id_type(self, path: str) -> tuple[str, str] | tuple[None, None]:
         self.logger.debug("Finding id for `%s`...", path)
         ids = self.indexed_file_ids
         if path in ids["fileRefs"]:
@@ -418,7 +418,8 @@ class OverleafBroker:
         else:
             return (None, None)
 
-    def _download_binary_file(self, id: str, pathname: str) -> bool:
+    def download_file(self, id: str, pathname: str) -> bool:
+        self.logger.debug("Downloading file %s...", pathname)
         url = f"{PROJECTS_URL}/{self.project_id}/file/{id}"
         headers = {
             "Accept": "*/*",
@@ -427,16 +428,17 @@ class OverleafBroker:
         try:
             response = self._get(url, headers=headers)
         except requests.HTTPError as e:
-            self.logger.error("Failed to download binary file %s:\n%s", pathname, e)
-            exit(ErrorNumber.HTTP_ERROR)
+            self.logger.error("Failed to download file %s:\n%s", pathname, e)
+            return False
         if dirname := os.path.dirname(pathname):
             os.makedirs(dirname, exist_ok=True)
         with open(os.path.join(self.working_dir, pathname), "wb") as f:
             f.write(response.content)
+        self.logger.debug("Succeed to download file %s...", pathname)
         return True
 
-    def _download_text_file(self, id: str, pathname: str) -> bool:
-        self.logger.debug("Downloading text file %s...", pathname)
+    def download_doc_file(self, id: str, pathname: str) -> bool:
+        self.logger.debug("Downloading doc file %s...", pathname)
         url = f"{PROJECTS_URL}/{self.project_id}/doc/{id}/download"
         headers = {
             "Accept": "*/*",
@@ -445,27 +447,14 @@ class OverleafBroker:
         try:
             response = self._get(url, headers=headers)
         except requests.HTTPError as e:
-            self.logger.error("Failed to download text file %s:\n%s", pathname, e)
-            exit(ErrorNumber.HTTP_ERROR)
+            self.logger.error("Failed to download doc file %s:\n%s", pathname, e)
+            return False
         if dirname := os.path.dirname(pathname):
             os.makedirs(dirname, exist_ok=True)
         with open(os.path.join(self.working_dir, pathname), "wb") as f:
             f.write(response.content)
+        self.logger.debug("Succeed to download doc file %s...", pathname)
         return True
-
-    def download_file(self, pathname: str) -> bool:
-        self.logger.debug("Downloading file `%s`...", pathname)
-        id, type = self._find_id_type(pathname)
-        if id is None:
-            self.logger.error("Failed to find ID for `%s`.", pathname)
-            return False
-        self.logger.debug("Found file ID for `%s`: %s", pathname, id)
-        if type == "file":
-            return self._download_binary_file(id, pathname)
-        elif type == "doc":
-            return self._download_text_file(id, pathname)
-        else:
-            raise ValueError(f"Unknown type: {type}")
 
     def _get_original_file_ids(self) -> dict:
         self.logger.debug("Fetching document IDs from Overleaf project %s...", self.project_id)
@@ -574,7 +563,7 @@ class OverleafBroker:
         self.logger.info("Creating folder %s...", path)
         if dry_run:
             return
-        parent_folder_id, type = self._find_id_type(os.path.dirname(path))
+        parent_folder_id, type = self.find_id_type(os.path.dirname(path))
         assert type == "folder"
 
         url = f"{self.project_url}/folder"
@@ -588,7 +577,7 @@ class OverleafBroker:
         self._post(url, headers=headers, data=data)
 
     def delete(self, path: str, dry_run=False) -> None:
-        id, type = self._find_id_type(path)
+        id, type = self.find_id_type(path)
         self.logger.info("Deleting `%s`: %s %s", type, path, id)
 
         if type == "folder" and input(
@@ -708,21 +697,75 @@ class OverleafProject:
         name = "; ".join(f"{user.get("last_name", "")}, {user.get("first_name", "")}" for user in users)
         email = "; ".join(user["email"] for user in revision["meta"]["users"])
 
-        self.logger.debug("Migrating (file) overleaf revision %d->%d...", fromV, toV)
+        def _diff_to_content(diff: list[dict]) -> str:
+            exclusive_status = {"u", "i", "d"}
+            content = ""
+
+            for d in diff:
+                found_status = exclusive_status.intersection(d.keys())
+                assert len(found_status) == 1
+                status = found_status.pop()
+                match status:
+                    case "u" | "i":
+                        content += d[status]
+                    case "d":
+                        pass
+                    case _:
+                        raise ValueError(f"Unsupported diff status: {status}")
+            return content
+
+        def _migrate(filetree_diff_item: dict[str, str], diff: list[dict]) -> None:
+            _pathname = filetree_diff_item["pathname"]
+            _operation = filetree_diff_item["operation"]
+            path = os.path.join(self.working_dir, _pathname)
+            match _operation:
+                case "added" | "edited":
+                    self.logger.debug("Add/Edit `%s`...", _pathname)
+                    os.makedirs(os.path.dirname(path), exist_ok=True)
+                    with open(path, "w") as f:
+                        f.write(_diff_to_content(diff))
+                case "removed":
+                    self.logger.debug("Remove `%s`...", _pathname)
+                    self._remove(path)
+                case "renamed":
+                    self.logger.debug("Rename `%s`...", _pathname)
+                    os.rename(path, os.path.join(self.working_dir, filetree_diff_item["newPathname"]))
+                case _:
+                    raise ValueError(f"Unsupported operation: {_operation}")
+
+        self.logger.debug("Migrating overleaf revision %d->%d...", fromV, toV)
         # Operate files on filesystem
         filetree_diff = self.overleaf_broker.filetree_diff(fromV, toV)
+        result = False
         for item in filetree_diff:
             if not item.get("operation", None):
                 continue
-            if not self.overleaf_broker.download_file(item["pathname"]):
-                return False
+            pathname = item["pathname"]
+            id, type = self.overleaf_broker.find_id_type(pathname)
+            if id is None:
+                break
+            assert type is not None
+            self.logger.debug("Found file ID for `%s`: %s (%s)", pathname, id, type)
+            match type:
+                case "doc":
+                    _migrate(item, self.overleaf_broker.diff(fromV, toV, pathname))
+                case "file":
+                    if not self.overleaf_broker.download_file(id, pathname):
+                        break
+                case "folder":
+                    raise ValueError("Folder migration not supported.")
+                case _:
+                    raise ValueError(f"Unknown type: {type}")
+        else:
+            result = True
 
-        # Make git commit
-        self.git_broker.add_all()
-        self.git_broker.commit(f"{fromV}->{toV}", ts, name, email)
-        self.logger.debug("Revision %d->%d migrated.", fromV, toV)
+        if result:
+            # Make git commit
+            self.git_broker.add_all()
+            self.git_broker.commit(f"{fromV}->{toV}", ts, name, email)
+            self.logger.debug("Revision migrated: %d->%d", fromV, toV)
 
-        return True
+        return result
 
     def _migrate_revisions(self, revisions: list[dict]) -> None:
         """
@@ -730,7 +773,7 @@ class OverleafProject:
         Note that this function is **not** responsible for switching branch.
         """
         revision_length = len(revisions)
-        log_msg = f"Migrating (file) overleaf revision %{len(str(revision_length))}d/{revision_length}: %d->%d"
+        log_msg = f"Migrating overleaf revision %{len(str(revision_length))}d/{revision_length}: %d->%d"
         for i, rev in enumerate(reversed(revisions)):
             self.logger.info(log_msg, i + 1, rev["fromV"], rev["toV"])
             if not self._migrate_revision(rev):
@@ -755,7 +798,7 @@ class OverleafProject:
         self.git_broker.switch_to_working_branch(force=True)
 
     def _git_repo_init(self) -> None:
-        self.logger.info("Migrating (file) all revisions...")
+        self.logger.info("Migrating all revisions...")
         self.git_broker.switch_to_overleaf_branch(create=True)
         self.logger.info("Migrating the initial overleaf revision...")
         self._migrate_revision_zip(self.overleaf_broker.updates[-1], init=True)
