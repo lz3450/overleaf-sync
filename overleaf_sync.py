@@ -33,7 +33,7 @@ PROJECTS_URL = f"{OVERLEAF_URL}/project"
 
 OVERLEAF_SYNC_DIR_NAME = ".overleaf-sync"
 
-LOG_FORMAT = "[%(asctime)s] [%(name)s] [%(levelname)s] %(message)s"
+LOG_FORMAT = "[%(asctime)s.%(msecs)03d] [%(name)s] [%(levelname)s] %(message)s"
 LOG_DATEFMT = "%Y-%m-%d %H:%M:%S"
 LOG_DIR = os.path.join(OVERLEAF_SYNC_DIR_NAME, "logs")
 
@@ -284,7 +284,6 @@ class OverleafBroker:
 
         self.logger.info("Logging in to Overleaf...")
         response = self._session.get(LOGIN_URL)
-        response.raise_for_status()
         soup = BeautifulSoup(response.text, "html.parser")
         csrf_token: str
         csrf_token = soup.find("input", {"name": "_csrf"})["value"]  # type: ignore
@@ -292,15 +291,10 @@ class OverleafBroker:
             raise ValueError("Failed to fetch CSRF token.")
         payload = {"email": self.username, "password": self.password, "_csrf": csrf_token}
         response = self._session.post(LOGIN_URL, data=payload)
-        response.raise_for_status()
         self._logged_in = True
         self.logger.info("Login successful.")
 
-    @property
-    def updates(self) -> list[dict]:
-        if self._updates:
-            return self._updates
-
+    def _get_updates(self) -> list[dict]:
         url = f"{PROJECTS_URL}/{self.project_id}/updates"
         headers = {
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
@@ -308,8 +302,8 @@ class OverleafBroker:
         self.logger.debug("Fetching project updates from %s...", url)
         response = self._get(url, headers=headers)
         response_json: dict = response.json()
-        self._updates = response_json["updates"]
-        if not self._updates:
+        updates: list[dict] = response_json["updates"]
+        if not updates:
             raise ValueError("Failed to fetch project updates.")
 
         while (next_before_ts := response_json.get("nextBeforeTimestamp", -1)) > 0:
@@ -317,10 +311,15 @@ class OverleafBroker:
             self.logger.debug("Fetching updates before %d...", next_before_ts)
             response = self._get(url, headers=headers)
             response_json = response.json()
-            self._updates.extend(response_json["updates"])
+            updates.extend(response_json["updates"])
 
-        with open(self.updates_file, "w") as f:
-            json.dump(self._updates, f)
+        return updates
+
+    @property
+    def updates(self) -> list[dict]:
+        if self._updates:
+            return self._updates
+        self._updates = self._get_updates()
         return self._updates
 
     @property
@@ -328,7 +327,12 @@ class OverleafBroker:
         """The latest overleaf revision in remote Overleaf project"""
         return self.updates[0]["toV"]
 
+    def dump_updates(self) -> None:
+        with open(self.updates_file, "w") as f:
+            json.dump(self.updates, f)
+
     def refresh_updates(self) -> None:
+        self.logger.debug("Overleaf updates marked outdated...")
         self._updates = None
 
     def download_zip(self, revision: int | None = None) -> None:
@@ -392,7 +396,7 @@ class OverleafBroker:
         return response.json()["diff"]
 
     def diff(self, from_: int, to_: int, pathname: str) -> list[dict]:
-        self.logger.debug("Fetching diff of file %s from %d to %d...", pathname, from_, to_)
+        self.logger.debug("Fetching diff of file `%s` from %d to %d...", pathname, from_, to_)
         url = f"{PROJECTS_URL}/{self.project_id}/diff?from={from_}&to={to_}&pathname={urllib.parse.quote(pathname)}"
         headers = {
             "Accept": "application/json",
@@ -400,7 +404,6 @@ class OverleafBroker:
             "X-CSRF-TOKEN": self.csrf_token,
         }
         response = self._get(url, headers=headers)
-        response.raise_for_status()
         return response.json()["diff"]
 
     def _find_id_type(self, path: str) -> tuple[str, str] | tuple[None, None]:
@@ -415,19 +418,14 @@ class OverleafBroker:
         else:
             return (None, None)
 
-    def download_binary_file(self, pathname: str) -> bool:
-        self.logger.debug("Downloading binary file %s...", pathname)
-        id, type = self._find_id_type(pathname)
-        if id is None or type != "file":
-            return False
+    def _download_binary_file(self, id: str, pathname: str) -> bool:
         url = f"{PROJECTS_URL}/{self.project_id}/file/{id}"
         headers = {
             "Accept": "*/*",
             "Referer": self.project_url,
         }
-        response = self._get(url, headers=headers)
         try:
-            response.raise_for_status()
+            response = self._get(url, headers=headers)
         except requests.HTTPError as e:
             self.logger.error("Failed to download binary file %s:\n%s", pathname, e)
             exit(ErrorNumber.HTTP_ERROR)
@@ -437,21 +435,49 @@ class OverleafBroker:
             f.write(response.content)
         return True
 
-    @property
-    def original_file_ids(self) -> dict:
-        if self._original_file_ids:
-            return self._original_file_ids
+    def _download_text_file(self, id: str, pathname: str) -> bool:
+        self.logger.debug("Downloading text file %s...", pathname)
+        url = f"{PROJECTS_URL}/{self.project_id}/doc/{id}/download"
+        headers = {
+            "Accept": "*/*",
+            "Referer": self.project_url,
+        }
+        try:
+            response = self._get(url, headers=headers)
+        except requests.HTTPError as e:
+            self.logger.error("Failed to download text file %s:\n%s", pathname, e)
+            exit(ErrorNumber.HTTP_ERROR)
+        if dirname := os.path.dirname(pathname):
+            os.makedirs(dirname, exist_ok=True)
+        with open(os.path.join(self.working_dir, pathname), "wb") as f:
+            f.write(response.content)
+        return True
 
+    def download_file(self, pathname: str) -> bool:
+        self.logger.debug("Downloading file `%s`...", pathname)
+        id, type = self._find_id_type(pathname)
+        if id is None:
+            self.logger.error("Failed to find ID for `%s`.", pathname)
+            return False
+        self.logger.debug("Found file ID for `%s`: %s", pathname, id)
+        if type == "file":
+            return self._download_binary_file(id, pathname)
+        elif type == "doc":
+            return self._download_text_file(id, pathname)
+        else:
+            raise ValueError(f"Unknown type: {type}")
+
+    def _get_original_file_ids(self) -> dict:
         self.logger.debug("Fetching document IDs from Overleaf project %s...", self.project_id)
         response = self._get(f"{OVERLEAF_URL}/socket.io/1/?projectId={self.project_id}")
         ws_id = response.text.split(":")[0]
         ws = websocket.create_connection(
             f"wss://overleaf.s3lab.io/socket.io/1/websocket/{ws_id}?projectId={self.project_id}"
         )
-        data: str
         while True:
             try:
-                data = ws.recv()  # type: ignore
+                data = ws.recv()
+                assert isinstance(data, str)
             except websocket.WebSocketConnectionClosedException:
                 self.logger.critical("WebSocket connection closed.")
                 exit(ErrorNumber.HTTP_ERROR)
@@ -463,14 +489,22 @@ class OverleafBroker:
                     if response_name == "joinProjectResponse":
                         break
         ws.close()
-        self._original_file_ids = data_json["args"][0]["project"]["rootFolder"][0]
 
-        with open(self.ids_file, "w") as f:
-            json.dump(self._original_file_ids, f)
+        ids = data_json["args"][0]["project"]["rootFolder"][0]
+        if not ids:
+            raise RuntimeError("Failed to fetch document IDs.")
+        return ids
 
-        if not self._original_file_ids:
-            raise ValueError("Failed to fetch document IDs.")
+    @property
+    def original_file_ids(self) -> dict:
+        if self._original_file_ids:
+            return self._original_file_ids
+        self._original_file_ids = self._get_original_file_ids()
         return self._original_file_ids
+
+    def dump_original_file_ids(self) -> None:
+        with open(self.ids_file, "w") as f:
+            json.dump(self.original_file_ids, f)
 
     @property
     def root_folder_id(self) -> str:
@@ -479,7 +513,7 @@ class OverleafBroker:
             return self._root_folder_id
         self._root_folder_id = self.original_file_ids["_id"]
         if not self._root_folder_id:
-            raise ValueError("Failed to fetch root folder ID.")
+            raise RuntimeError("Failed to fetch root folder ID.")
         return self._root_folder_id
 
     def upload(self, pathname: str, dry_run=False) -> None:
@@ -487,7 +521,7 @@ class OverleafBroker:
         Upload the file to the Overleaf project.
         There is a rate limit of 200 request per 15 minutes.
         """
-        self.logger.info("Uploading %s...", pathname)
+        self.logger.info("Uploading `%s`...", pathname)
         if dry_run:
             return
 
@@ -503,17 +537,11 @@ class OverleafBroker:
         }
         params = {"folder_id": self.root_folder_id}
         data = {"relativePath": f"{relative_path}", "name": file_name, "type": "application/octet-stream"}
-        qqfile = open(os.path.join(self.working_dir, pathname), "rb")
-        files = {"qqfile": (file_name, qqfile, "application/octet-stream")}
-        response = self._post(url, headers=headers, params=params, data=data, files=files)
-        qqfile.close()
-        response.raise_for_status()
+        with open(os.path.join(self.working_dir, pathname), "rb") as qqfile:
+            files = {"qqfile": (file_name, qqfile, "application/octet-stream")}
+            self._post(url, headers=headers, params=params, data=data, files=files)
 
-    @property
-    def indexed_file_ids(self) -> dict[str, dict[str, str]]:
-        if self._indexed_file_ids:
-            return self._indexed_file_ids
-
+    def _get_indexed_file_ids(self) -> dict[str, dict[str, str]]:
         ids: dict[str, dict[str, str]] = {"folders": {}, "fileRefs": {}, "docs": {}}
 
         def _restructure(folder_data: dict, current_folder="") -> None:
@@ -528,10 +556,17 @@ class OverleafBroker:
                 ids["fileRefs"][f'{current_folder}{file_ref["name"]}'] = file_ref["_id"]
 
         _restructure(self.original_file_ids)
-        self._indexed_file_ids = ids
+        return ids
+
+    @property
+    def indexed_file_ids(self) -> dict[str, dict[str, str]]:
+        if self._indexed_file_ids:
+            return self._indexed_file_ids
+        self._indexed_file_ids = self._get_indexed_file_ids()
         return self._indexed_file_ids
 
     def refresh_indexed_file_ids(self) -> None:
+        self.logger.debug("Indexed file IDs marked outdated...")
         self._original_file_ids = None
         self._indexed_file_ids = None
 
@@ -550,12 +585,11 @@ class OverleafBroker:
             "X-CSRF-TOKEN": self.csrf_token,
         }
         data = {"name": os.path.basename(path), "parent_folder_id": parent_folder_id}
-        response = self._post(url, headers=headers, data=data)
-        response.raise_for_status()
+        self._post(url, headers=headers, data=data)
 
     def delete(self, path: str, dry_run=False) -> None:
         id, type = self._find_id_type(path)
-        self.logger.info('Deleting "%s": %s %s', type, path, id)
+        self.logger.info("Deleting `%s`: %s %s", type, path, id)
 
         if type == "folder" and input(
             f"Are you sure you want to delete folder {path}? (y/n): "
@@ -575,8 +609,7 @@ class OverleafBroker:
         }
         if type not in ["file", "doc", "folder"]:
             raise ValueError(f"Invalid type: {type}")
-        response = self._delete(url, headers=headers)
-        response.raise_for_status()
+        self._delete(url, headers=headers)
 
 
 class OverleafProject:
@@ -662,7 +695,7 @@ class OverleafProject:
             self.logger.info(log_msg, i + 1, rev["fromV"], rev["toV"])
             self._migrate_revision_zip(rev)
 
-    def _migrate_revision_diff(self, revision: dict) -> bool:
+    def _migrate_revision(self, revision: dict) -> bool:
         """
         Migrate the overleaf revision to a git revision using diff requests.
         Note that this function is **not** responsible for switching branch.
@@ -675,56 +708,14 @@ class OverleafProject:
         name = "; ".join(f"{user.get("last_name", "")}, {user.get("first_name", "")}" for user in users)
         email = "; ".join(user["email"] for user in revision["meta"]["users"])
 
-        def _diff_to_content(diff: list[dict]) -> str:
-            exclusive_status = {"u", "i", "d"}
-            content = ""
-
-            for d in diff:
-                found_status = exclusive_status.intersection(d.keys())
-                assert len(found_status) == 1
-                status = found_status.pop()
-                match status:
-                    case "u" | "i":
-                        content += d[status]
-                    case "d":
-                        pass
-                    case _:
-                        raise ValueError(f"Unsupported diff status: {status}")
-            return content
-
-        def _migrate(operation: str, pathname: str, diff: list[dict]) -> None:
-            path = os.path.join(self.working_dir, pathname)
-            match operation:
-                case "added" | "edited":
-                    self.logger.debug("Add/Edit %s...", item["pathname"])
-                    os.makedirs(os.path.dirname(path), exist_ok=True)
-                    with open(path, "w") as f:
-                        f.write(_diff_to_content(diff))
-                case "removed":
-                    self.logger.debug("Removing %s...", item["pathname"])
-                    self._remove(path)
-                case "renamed":
-                    self.logger.debug("Rename %s...", item["pathname"])
-                    os.rename(path, os.path.join(self.working_dir, item["newPathname"]))
-                case _:
-                    raise ValueError(f"Unsupported operation: {item['operation']}")
-
-        self.logger.debug("Migrating (diff) revision %d->%d...", fromV, toV)
+        self.logger.debug("Migrating (file) overleaf revision %d->%d...", fromV, toV)
         # Operate files on filesystem
         filetree_diff = self.overleaf_broker.filetree_diff(fromV, toV)
         for item in filetree_diff:
-            if not (operation := item.get("operation", None)):
+            if not item.get("operation", None):
                 continue
-            if item.get("editable", True):
-                pathname = item["pathname"]
-                diff = self.overleaf_broker.diff(fromV, toV, pathname)
-                _migrate(operation, pathname, diff)
-            else:
-                # self.overleaf_broker.refresh_indexed_file_ids()
-                if self.overleaf_broker.download_binary_file(item["pathname"]):
-                    self.logger.debug("Downloaded binary file %s...", item["pathname"])
-                else:
-                    return False
+            if not self.overleaf_broker.download_file(item["pathname"]):
+                return False
 
         # Make git commit
         self.git_broker.add_all()
@@ -733,16 +724,16 @@ class OverleafProject:
 
         return True
 
-    def _migrate_revisions_diff(self, revisions: list[dict]) -> None:
+    def _migrate_revisions(self, revisions: list[dict]) -> None:
         """
         Migrate all the given revisions to git revisions.
         Note that this function is **not** responsible for switching branch.
         """
         revision_length = len(revisions)
-        log_msg = f"Migrating (diff) overleaf revision %{len(str(revision_length))}d/{revision_length}: %d->%d"
+        log_msg = f"Migrating (file) overleaf revision %{len(str(revision_length))}d/{revision_length}: %d->%d"
         for i, rev in enumerate(reversed(revisions)):
             self.logger.info(log_msg, i + 1, rev["fromV"], rev["toV"])
-            if not self._migrate_revision_diff(rev):
+            if not self._migrate_revision(rev):
                 self.logger.info("Switch to ZIP migration: %d.", rev["toV"])
                 self._migrate_revision_zip(rev)
 
@@ -763,12 +754,12 @@ class OverleafProject:
         self._migrate_revisions_zip(updates[:-1])
         self.git_broker.switch_to_working_branch(force=True)
 
-    def _git_repo_init_diff(self) -> None:
-        self.logger.info("Migrating (diff) all revisions...")
+    def _git_repo_init(self) -> None:
+        self.logger.info("Migrating (file) all revisions...")
         self.git_broker.switch_to_overleaf_branch(create=True)
         self.logger.info("Migrating the initial overleaf revision...")
         self._migrate_revision_zip(self.overleaf_broker.updates[-1], init=True)
-        self._migrate_revisions_diff(self.overleaf_broker.updates)
+        self._migrate_revisions(self.overleaf_broker.updates)
         self.git_broker.switch_to_working_branch(force=True)
 
     def init(self, username: str, password: str, project_id: str) -> ErrorNumber:
@@ -797,7 +788,7 @@ class OverleafProject:
         self.overleaf_broker.login(username, password, project_id)
         # Migrate overleaf revisions to git repo
         # self._git_repo_init_zip(n_revisions)
-        self._git_repo_init_diff()
+        self._git_repo_init()
 
         return ErrorNumber.OK
 
@@ -854,7 +845,7 @@ class OverleafProject:
             return
 
         self.git_broker.switch_to_overleaf_branch()
-        self._migrate_revisions_diff(upcoming_overleaf_revs)
+        self._migrate_revisions(upcoming_overleaf_revs)
         self.logger.debug("Current branch: %s", self.git_broker.current_branch)
 
     def pull(self, stash=True, _rebase=True, _switch=True, dry_run=False) -> ErrorNumber:
