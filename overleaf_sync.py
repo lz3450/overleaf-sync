@@ -128,6 +128,7 @@ class GitBroker:
     def add_all(self) -> bool:
         output = self("add", ".")
         if "nothing to commit" in output:
+            self.logger.debug("No changes to commit")
             return False
         return True
 
@@ -294,42 +295,45 @@ class OverleafBroker:
         self._logged_in = True
         self.logger.info("Login successful")
 
-    def _get_updates(self) -> list[dict]:
-        url = f"{PROJECTS_URL}/{self.project_id}/updates"
+    def _get_updates(self, before=0) -> tuple[list[dict], int]:
+        url = (
+            f"{PROJECTS_URL}/{self.project_id}/updates?before={before}"
+            if before > 0
+            else f"{PROJECTS_URL}/{self.project_id}/updates"
+        )
         headers = {
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
         }
         self.logger.debug("Fetching project updates from %s...", url)
         response = self._get(url, headers=headers)
         response_json: dict = response.json()
-        updates: list[dict] = response_json["updates"]
+        return response_json["updates"], response_json.get("nextBeforeTimestamp", 0)
+
+    def get_updates(self, before=0) -> list[dict]:
+        updates, _ = self._get_updates(before)
         if not updates:
             raise ValueError("Failed to fetch project updates")
-
-        while (next_before_ts := response_json.get("nextBeforeTimestamp", -1)) > 0:
-            url = f"{PROJECTS_URL}/{self.project_id}/updates?before={next_before_ts}"
-            self.logger.debug("Fetching updates before %d...", next_before_ts)
-            response = self._get(url, headers=headers)
-            response_json = response.json()
-            updates.extend(response_json["updates"])
-
         return updates
+
+    def dump_updates(self) -> None:
+        with open(self.updates_file, "w") as f:
+            json.dump(self.updates, f)
 
     @property
     def updates(self) -> list[dict]:
         if self._updates:
             return self._updates
-        self._updates = self._get_updates()
+        self._updates, next_before_ts = self._get_updates()
+        while next_before_ts > 0:
+            updates, next_before_ts = self._get_updates(before=next_before_ts)
+            self._updates.extend(updates)
+        self.dump_updates()
         return self._updates
 
     @property
     def remote_overleaf_rev(self) -> int:
         """The latest overleaf revision in remote Overleaf project"""
         return self.updates[0]["toV"]
-
-    def dump_updates(self) -> None:
-        with open(self.updates_file, "w") as f:
-            json.dump(self.updates, f)
 
     def refresh_updates(self) -> None:
         self.logger.debug("Overleaf updates marked outdated...")
@@ -638,64 +642,30 @@ class OverleafProject:
         except FileNotFoundError:
             self.logger.debug('File "%s" not found. Skipping...', path)
 
-    def _migrate_revision_zip(self, revision: dict, init: bool = False) -> None:
+    def _migrate_revision_zip(self, from_v: int, to_v: int, ts: int, name: str, email: str) -> None:
         """
         Migrate the overleaf revision to a git revision using revision ZIP.
         Note that this function is not responsible for switching branch.
-        `old`: Whether to merge all old revisions.
         """
-        revision_to_migrate = revision["fromV"] if init else revision["toV"]
-        self.logger.debug("Migrating (ZIP) revision %d...", revision_to_migrate)
+        self.logger.debug("Migrating (ZIP) overleaf revision %d->%d...", from_v, to_v)
         try:
-            self.overleaf_broker.download_zip(revision_to_migrate)
+            self.overleaf_broker.download_zip(to_v)
         except requests.HTTPError as e:
-            self.logger.critical("Failed to download revision %d:\n%s", revision_to_migrate, e)
+            self.logger.critical("Failed to download revision %d:\n%s", to_v, e)
             self.logger.critical("Please remove the working directory and try again later. Exiting...")
             exit(ErrorNumber.HTTP_ERROR)
         extracted_pathnames = self.overleaf_broker.unzip()
         # Delete files not in the ZIP
-        if not init:
-            for managed_file in self.git_broker.managed_files:
-                if managed_file not in extracted_pathnames:
-                    self.logger.debug("Deleting file %s from filesystem...", managed_file)
-                    self._remove(managed_file)
-        users: list[dict[str, str]] = revision["meta"]["users"]
-        name = "; ".join(f"{user.get("last_name", "")}, {user.get("first_name", "")}" for user in users)
-        email = "; ".join(user["email"] for user in revision["meta"]["users"])
-        if not self.git_broker.add_all():
-            self.logger.debug("No changes to commit")
-        self.git_broker.commit(
-            msg=f"{revision_to_migrate}" if init else f"{revision['fromV']}->{revision['toV']}",
-            ts=revision["meta"]["end_ts"] // 1000,
-            name=name,
-            email=email,
-        )
-        self.logger.debug("Revision %s migrated", revision_to_migrate)
+        for managed_file in self.git_broker.managed_files:
+            if managed_file not in extracted_pathnames:
+                self.logger.debug("Deleting file %s from filesystem...", managed_file)
+                self._remove(managed_file)
 
-    def _migrate_revisions_zip(self, revisions: list[dict]) -> None:
-        """
-        Migrate all the given revisions to git revisions.
-        Note that this function is not responsible for switching branch.
-        """
-
-        revision_length = len(revisions)
-        log_msg = f"Migrating (ZIP) overleaf revision %{len(str(revision_length))}d/{revision_length}: %d->%d"
-        for i, rev in enumerate(reversed(revisions)):
-            self.logger.info(log_msg, i + 1, rev["fromV"], rev["toV"])
-            self._migrate_revision_zip(rev)
-
-    def _migrate_revision(self, revision: dict) -> bool:
+    def _migrate_revision_diff(self, from_v: int, to_v: int, ts: int, name: str, email: str) -> bool:
         """
         Migrate the overleaf revision to a git revision using diff requests.
         Note that this function is **not** responsible for switching branch.
-        `FromV` and `toV` are required if `revision` is `None`.
         """
-        fromV = revision["fromV"]
-        toV = revision["toV"]
-        ts = revision["meta"]["end_ts"] // 1000
-        users: list[dict[str, str]] = revision["meta"]["users"]
-        name = "; ".join(f"{user.get("last_name", "")}, {user.get("first_name", "")}" for user in users)
-        email = "; ".join(user["email"] for user in revision["meta"]["users"])
 
         def _diff_to_content(diff: list[dict]) -> str:
             exclusive_status = {"u", "i", "d"}
@@ -733,10 +703,9 @@ class OverleafProject:
                 case _:
                     raise ValueError(f"Unsupported operation: {_operation}")
 
-        self.logger.debug("Migrating overleaf revision %d->%d...", fromV, toV)
+        self.logger.debug("Migrating (diff) overleaf revision %d->%d...", from_v, to_v)
         # Operate files on filesystem
-        filetree_diff = self.overleaf_broker.filetree_diff(fromV, toV)
-        result = False
+        filetree_diff = self.overleaf_broker.filetree_diff(from_v, to_v)
         for item in filetree_diff:
             if not item.get("operation", None):
                 continue
@@ -748,7 +717,7 @@ class OverleafProject:
             self.logger.debug("Found file ID for `%s`: %s (%s)", pathname, id, type)
             match type:
                 case "doc":
-                    _migrate(item, self.overleaf_broker.diff(fromV, toV, pathname))
+                    _migrate(item, self.overleaf_broker.diff(from_v, to_v, pathname))
                 case "file":
                     if not self.overleaf_broker.download_file(id, pathname):
                         break
@@ -757,15 +726,35 @@ class OverleafProject:
                 case _:
                     raise ValueError(f"Unknown type: {type}")
         else:
-            result = True
+            return True
 
-        if result:
-            # Make git commit
-            self.git_broker.add_all()
-            self.git_broker.commit(f"{fromV}->{toV}", ts, name, email)
-            self.logger.debug("Revision migrated: %d->%d", fromV, toV)
+        return False
 
-        return result
+    def _migrate_revision(self, revision: dict) -> None:
+        fromV = revision["fromV"]
+        toV = revision["toV"]
+        ts = revision["meta"]["end_ts"] // 1000
+        users: list[dict[str, str]] = revision["meta"]["users"]
+        assert len(users) == 1
+        user = users[0]
+        name = f"{user.get("last_name", "")}, {user.get("first_name", "")}"
+        email = user["email"]
+        from_v = fromV
+        to_v = toV
+        #     for to_v in range(toV, fromV, -1):
+        #         rev = self.overleaf_broker.get_updates(before=to_v)[0]
+        #         if len(rev["meta"]["users"]) == 1:
+        #             break
+        #     else:
+        #         self.logger.error("Failed to find revision %d", fromV)
+        if not self._migrate_revision_diff(from_v, to_v, ts, name, email):
+            self.logger.info("Switch to ZIP migration: %d", toV)
+            self._migrate_revision_zip(from_v, to_v, ts, name, email)
+
+        # Make git commit
+        self.git_broker.add_all()
+        self.git_broker.commit(f"{from_v}->{to_v}", ts, name, email)
+        self.logger.debug("Revision migrated: %d->%d", from_v, to_v)
 
     def _migrate_revisions(self, revisions: list[dict]) -> None:
         """
@@ -776,32 +765,16 @@ class OverleafProject:
         log_msg = f"Migrating overleaf revision %{len(str(revision_length))}d/{revision_length}: %d->%d"
         for i, rev in enumerate(reversed(revisions)):
             self.logger.info(log_msg, i + 1, rev["fromV"], rev["toV"])
-            if not self._migrate_revision(rev):
-                self.logger.info("Switch to ZIP migration: %d", rev["toV"])
-                self._migrate_revision_zip(rev)
+            self._migrate_revision(rev)
 
     @property
     def new_working_commit_exists(self) -> bool:
         return self.git_broker.current_working_commit != self.git_broker.starting_working_commit
 
-    def _git_repo_init_zip(self, n_revisions: int) -> None:
-        updates: list[dict] = self.overleaf_broker.updates
-        updates_length = len(updates)
-        # Fetch one more revision: old->xxx
-        updates = updates[: n_revisions + 1 if n_revisions > 0 or n_revisions + 1 > updates_length else None]
-
-        self.logger.info("Migrating (ZIP) all revisions...")
-        self.git_broker.switch_to_overleaf_branch(create=True)
-        self.logger.info("Migrating the initial overleaf revision...")
-        self._migrate_revision_zip(updates[-1], init=True)
-        self._migrate_revisions_zip(updates[:-1])
-        self.git_broker.switch_to_working_branch(force=True)
-
     def _git_repo_init(self) -> None:
         self.logger.info("Migrating all revisions...")
         self.git_broker.switch_to_overleaf_branch(create=True)
         self.logger.info("Migrating the initial overleaf revision...")
-        self._migrate_revision_zip(self.overleaf_broker.updates[-1], init=True)
         self._migrate_revisions(self.overleaf_broker.updates)
         self.git_broker.switch_to_working_branch(force=True)
 
