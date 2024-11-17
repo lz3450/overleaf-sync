@@ -708,9 +708,11 @@ class OverleafProject:
         self.logger.debug("Migrating (diff) overleaf revision %d->%d...", from_v, to_v)
         # Operate files on filesystem
         filetree_diff = self.overleaf_broker.filetree_diff(from_v, to_v)
-        for filetree_diff_entry in filetree_diff:
-            if "operation" not in filetree_diff_entry:
-                continue
+        filetree_diff_entries = [entry for entry in filetree_diff if "operation" in entry]
+        if any(not filetree_diff_entry.get("editable", True) for filetree_diff_entry in filetree_diff_entries):
+            self.logger.debug("Some files are not editable, skipping migrating (diff)")
+            return False
+        for filetree_diff_entry in filetree_diff_entries:
             pathname = filetree_diff_entry["pathname"]
             # id, type = self.overleaf_broker.find_id_type(pathname)
             # if id is None:
@@ -720,14 +722,10 @@ class OverleafProject:
             # if type != "doc":
             #     self.logger.debug("File type `%s` not supported, skipping migrating (diff)", type)
             #     break
-            if not filetree_diff_entry.get("editable", True):
-                self.logger.debug("File `%s` not editable, skipping migrating (diff)", pathname)
-                break
+            assert filetree_diff_entry.get("editable", True)
             _migrate(filetree_diff_entry, self.overleaf_broker.diff(from_v, to_v, pathname))
-        else:
-            return True
 
-        return False
+        return True
 
     def _migrate_revision(self, revision: dict) -> None:
         """"""
