@@ -644,12 +644,12 @@ class OverleafProject:
         except FileNotFoundError:
             self.logger.debug('File "%s" not found. Skipping...', path)
 
-    def _migrate_revision_zip(self, from_v: int, to_v: int, ts: int, name: str, email: str) -> None:
+    def _migrate_revision_zip(self, to_v: int) -> None:
         """
         Migrate the overleaf revision to a git revision using revision ZIP.
         Note that this function is not responsible for switching branch.
         """
-        self.logger.debug("Migrating (ZIP) overleaf revision %d->%d...", from_v, to_v)
+        self.logger.debug("Migrating (ZIP) overleaf revision %d...", to_v)
         try:
             self.overleaf_broker.download_zip(to_v)
         except requests.HTTPError as e:
