@@ -643,12 +643,10 @@ class OverleafProject:
         except FileNotFoundError:
             self.logger.debug('File "%s" not found. Skipping...', path)
 
-    def _migrate_revision_zip(self, from_v: int, to_v: int) -> None:
+    def _apply_changes_zip(self, to_v: int) -> None:
         """
-        Migrate the overleaf revision to a git revision using revision ZIP.
-        Note that this function is not responsible for switching branch.
+        Fetch and apply the changes between two overleaf revisions via downloaded ZIP.
         """
-        self.logger.debug("Migrating (ZIP) overleaf revision %d...", to_v)
         try:
             self.overleaf_broker.download_zip(to_v)
         except requests.HTTPError as e:
@@ -656,15 +654,10 @@ class OverleafProject:
             self.logger.critical("Please remove the working directory and try again later. Exiting...")
             exit(ErrorNumber.HTTP_ERROR)
         self.overleaf_broker.unzip()
-        # Remove files from the working directory that are removed in the overleaf project
-        for pathname in (entry["pathname"] for entry in self.overleaf_broker.filetree_diff(from_v, to_v) if entry.get("operation") == "removed"):
-            self.logger.debug("Deleting file %s from filesystem...", pathname)
-            self._remove(pathname)
 
-    def _migrate_revision_diff(self, from_v: int, to_v: int) -> bool:
+    def _apply_changes_diff(self, from_v: int, to_v: int, filetree_diff_entries: list[dict]) -> None:
         """
-        Migrate the overleaf revision to a git revision using diff requests.
-        Note that this function is **not** responsible for switching branch.
+        Fetch and apply the changes between two overleaf revisions via filetree diff.
         """
 
         def _diff_to_content(diff: list[dict]) -> str:
@@ -684,52 +677,48 @@ class OverleafProject:
                         raise ValueError(f"Unsupported diff status: {status}")
             return content
 
-        def _migrate(filetree_diff_item: dict[str, str], diff: list[dict]) -> None:
-            _pathname = filetree_diff_item["pathname"]
-            _operation = filetree_diff_item["operation"]
-            path = os.path.join(self.working_dir, _pathname)
-            match _operation:
-                case "added" | "edited":
-                    self.logger.debug("Add/Edit `%s`...", _pathname)
-                    os.makedirs(os.path.dirname(path), exist_ok=True)
-                    with open(path, "w") as f:
-                        f.write(_diff_to_content(diff))
-                case "removed":
-                    self.logger.debug("Remove `%s`...", _pathname)
-                    self._remove(path)
-                case "renamed":
-                    self.logger.debug("Rename `%s`...", _pathname)
-                    os.rename(path, os.path.join(self.working_dir, filetree_diff_item["newPathname"]))
-                case _:
-                    raise ValueError(f"Unsupported operation: {_operation}")
-
-        self.logger.debug("Migrating (diff) overleaf revision %d->%d...", from_v, to_v)
-        # Operate files on filesystem
-        filetree_diff_entries = [entry for entry in self.overleaf_broker.filetree_diff(from_v, to_v) if "operation" in entry]
-        if any(not filetree_diff_entry.get("editable", True) for filetree_diff_entry in filetree_diff_entries):
-            self.logger.debug("Some files are not editable, skipping migrating (diff)")
-            return False
         for filetree_diff_entry in filetree_diff_entries:
             pathname = filetree_diff_entry["pathname"]
-            assert filetree_diff_entry.get("editable", True)
-            _migrate(filetree_diff_entry, self.overleaf_broker.diff(from_v, to_v, pathname))
+            operation = filetree_diff_entry["operation"]
+            path = os.path.join(self.working_dir, pathname)
+            match operation:
+                case "added" | "edited":
+                    self.logger.debug("Add/Edit `%s`...", pathname)
+                    os.makedirs(os.path.dirname(path), exist_ok=True)
+                    with open(path, "w") as f:
+                        f.write(_diff_to_content(self.overleaf_broker.diff(from_v, to_v, pathname)))
+                case "removed":
+                    self.logger.debug("Remove `%s`...", pathname)
+                    self._remove(path)
+                case "renamed":
+                    self.logger.debug("Rename `%s`...", pathname)
+                    os.rename(path, os.path.join(self.working_dir, filetree_diff_entry["newPathname"]))
+                case _:
+                    raise ValueError(f"Unsupported operation: {operation}")
 
-        return True
+    def _migrate(self, from_v: int, to_v: int, ts: int, user: dict[str, str]) -> None:
+        """
+        Migrate the overleaf revision to a git revision.
+        Note that this function is **not** responsible for switching branch.
+        """
+
+        self.logger.debug("Migrating overleaf revision %d->%d...", from_v, to_v)
+        # Operate files on filesystem
+        filetree_diff_entries = [
+            entry for entry in self.overleaf_broker.filetree_diff(from_v, to_v) if "operation" in entry
+        ]
+        if all(_.get("editable", True) or _["operation"] in ("removed", "renamed") for _ in filetree_diff_entries):
+            self._apply_changes_diff(from_v, to_v, filetree_diff_entries)
+        else:
+            self.logger.info("Switch to ZIP migration: %d", to_v)
+            self._apply_changes_zip(to_v)
+
+        self.git_broker.add_all()
+        self.git_broker.commit(f"{from_v}->{to_v}", ts, f"{user["last_name"]}, {user["first_name"]}", user["email"])
+        self.logger.debug("Revision migrated: %d->%d", from_v, to_v)
 
     def _migrate_revision(self, revision: dict) -> None:
         """"""
-
-        def _migrate_and_commit(_from: int, _to: int, _ts: int, users: list[dict[str, str]]) -> None:
-            # Migrate the revision
-            if not self._migrate_revision_diff(_from, _to):
-                self.logger.info("Switch to ZIP migration: %d", _to)
-                self._migrate_revision_zip(_from, _to)
-            # Make git commit
-            _name = f"{users[0]["last_name"]}, {users[0]["first_name"]}"
-            _email = users[0]["email"]
-            self.git_broker.add_all()
-            self.git_broker.commit(f"{_from}->{_to}", _ts, _name, _email)
-            self.logger.debug("Revision migrated: %d->%d", _from, _to)
 
         def _get_filetree_diff_users_ts(from_: int, to_: int) -> tuple[list[dict[str, str]], int]:
             _users = []
@@ -753,7 +742,7 @@ class OverleafProject:
 
         if len(users) == 1:
             ts = revision["meta"]["end_ts"] // 1000
-            _migrate_and_commit(fromV, toV, ts, users)
+            self._migrate(fromV, toV, ts, users[0])
         else:
             self.logger.debug("Multiple users detected")
             from_v = fromV
@@ -776,12 +765,12 @@ class OverleafProject:
                 user = users[0]
                 user_id = user["id"]
                 if user_id != start_user_id:
-                    _migrate_and_commit(from_v, v, ts, users)
+                    self._migrate(from_v, v, ts, users[0])
                     from_v = v
                     start_user_id = user_id
             users, ts = _get_filetree_diff_users_ts(from_v, toV)
             assert len(users) == 1
-            _migrate_and_commit(from_v, toV, ts, users)
+            self._migrate(from_v, toV, ts, users[0])
 
     def _migrate_revisions(self, revisions: list[dict]) -> None:
         """
