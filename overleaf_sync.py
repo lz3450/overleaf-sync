@@ -714,7 +714,12 @@ class OverleafProject:
             self._apply_changes_zip(to_v)
 
         self.git_broker.add_all()
-        self.git_broker.commit(f"{from_v}->{to_v}", ts, f"{user["last_name"]}, {user["first_name"]}", user["email"])
+        self.git_broker.commit(
+            f"{from_v}->{to_v}",
+            ts,
+            f"{user.get("last_name", "")}, {user.get("first_name", "")}",
+            user.get("email", ""),
+        )
         self.logger.debug("Update migrated: %d->%d", from_v, to_v)
 
     def _migrate_update(self, update: dict) -> None:
