@@ -409,17 +409,19 @@ class OverleafBroker:
         response = self._get(url, headers=headers)
         return response.json()["diff"]
 
-    def find_id_type(self, path: str) -> tuple[str, str] | tuple[None, None]:
-        self.logger.debug("Finding id for `%s`...", path)
+    def find_id_type(self, pathname: str) -> tuple[str, str] | tuple[None, None]:
+        self.logger.debug("Finding id for `%s`...", pathname)
         ids = self.indexed_file_ids
-        if path in ids["fileRefs"]:
-            return ids["fileRefs"][path], "file"
-        elif path in ids["docs"]:
-            return ids["docs"][path], "doc"
-        elif path in ids["folders"]:
-            return ids["folders"][path], "folder"
+        if pathname in ids["fileRefs"]:
+            id, type = ids["fileRefs"][pathname], "file"
+        elif pathname in ids["docs"]:
+            id, type = ids["docs"][pathname], "doc"
+        elif pathname in ids["folders"]:
+            id, type = ids["folders"][pathname], "folder"
         else:
             return (None, None)
+        self.logger.debug("Found file ID for `%s`: %s (%s)", pathname, id, type)
+        return id, type
 
     def download_file(self, id: str, pathname: str) -> bool:
         self.logger.debug("Downloading file %s...", pathname)
