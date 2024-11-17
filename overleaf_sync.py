@@ -795,11 +795,21 @@ class OverleafProject:
             #     users, ts = _get_filetree_diff_users_ts(from_v, toV)
             #     _migrate_and_commit(from_v, toV, users[0])
             from_v = fromV
-            users, ts = _get_filetree_diff_users_ts(fromV, fromV + 1)
-            assert len(users) == 1
-            start_user_id = users[0]["id"]
-            for v in range(fromV + 1, toV):
+            # There exists cases that there is no modification in the diff, so no users
+            # For example, (fromV, fromV + 1) no modification, but (fromV, fromV + 2) has modification
+            for to_v in range(fromV + 1, toV):
+                users, ts = _get_filetree_diff_users_ts(fromV, to_v)
+                if len(users) == 1:
+                    start_user_id = users[0]["id"]
+                    break
+            else:
+                # not possible
+                raise ValueError("No user found in the revision")
+            for v in range(to_v, toV):
                 users, ts = _get_filetree_diff_users_ts(v, v + 1)
+                if not users:
+                    # There exists cases that there is no modification in the diff, so no users
+                    continue
                 assert len(users) == 1
                 user = users[0]
                 user_id = user["id"]
