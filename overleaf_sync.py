@@ -769,31 +769,6 @@ class OverleafProject:
             _migrate_and_commit(fromV, toV, ts, users)
         else:
             self.logger.debug("Multiple users detected")
-            # implementation 1: Too slow
-            # from_v = fromV
-            # while from_v < toV:
-            #     to_v = toV
-            #     for to_v in range(toV, from_v, -1):
-            #         users, ts = _get_filetree_diff_users_ts(from_v, to_v)
-            #         if len(users) == 1:
-            #             break
-            #     _migrate_and_commit(from_v, to_v, users[0])
-            #     from_v = to_v
-            # implementation 2: Too slow
-            # while (to_v := from_v) < toV:
-            #     for to_v in range(to_v, toV):
-            #         users, ts = _get_filetree_diff_users_ts(from_v, to_v)
-            #         if len(users) > 1:
-            #             break
-            #     else:
-            #         _migrate_and_commit(from_v, toV, users[0])
-
-            #     to_v -= 1
-            #     _migrate_and_commit(from_v, to_v, users[0])
-            #     from_v = to_v
-            # else:
-            #     users, ts = _get_filetree_diff_users_ts(from_v, toV)
-            #     _migrate_and_commit(from_v, toV, users[0])
             from_v = fromV
             # There exists cases that there is no modification in the diff, so no users
             # For example, (fromV, fromV + 1) no modification, but (fromV, fromV + 2) has modification
