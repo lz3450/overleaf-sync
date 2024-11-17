@@ -360,7 +360,7 @@ class OverleafBroker:
             f.write(response.content)
         self.logger.debug("Project ZIP downloaded as %s", self.overleaf_zip)
 
-    def unzip(self, file_list: list | None = None) -> list[str]:
+    def unzip(self, file_list: list | None = None) -> None:
         """
         Unzip the downloaded ZIP file to the LaTeX project directory.
         `file_list`: List of files to extract. If `None`, extract all files.
@@ -374,7 +374,6 @@ class OverleafBroker:
                     zip_ref.extract(file, self.working_dir)
             else:
                 zip_ref.extractall(self.working_dir)
-            return [zip_info.filename for zip_info in zip_ref.filelist]
 
     @property
     def csrf_token(self) -> str:
@@ -644,7 +643,7 @@ class OverleafProject:
         except FileNotFoundError:
             self.logger.debug('File "%s" not found. Skipping...', path)
 
-    def _migrate_revision_zip(self, to_v: int) -> None:
+    def _migrate_revision_zip(self, from_v: int, to_v: int) -> None:
         """
         Migrate the overleaf revision to a git revision using revision ZIP.
         Note that this function is not responsible for switching branch.
@@ -656,12 +655,11 @@ class OverleafProject:
             self.logger.critical("Failed to download revision %d:\n%s", to_v, e)
             self.logger.critical("Please remove the working directory and try again later. Exiting...")
             exit(ErrorNumber.HTTP_ERROR)
-        extracted_pathnames = self.overleaf_broker.unzip()
-        # Delete files not in the ZIP
-        for managed_file in self.git_broker.managed_files:
-            if managed_file not in extracted_pathnames:
-                self.logger.debug("Deleting file %s from filesystem...", managed_file)
-                self._remove(managed_file)
+        self.overleaf_broker.unzip()
+        # Remove files from the working directory that are removed in the overleaf project
+        for pathname in (entry["pathname"] for entry in self.overleaf_broker.filetree_diff(from_v, to_v) if entry.get("operation") == "removed"):
+            self.logger.debug("Deleting file %s from filesystem...", pathname)
+            self._remove(pathname)
 
     def _migrate_revision_diff(self, from_v: int, to_v: int) -> bool:
         """
@@ -707,8 +705,7 @@ class OverleafProject:
 
         self.logger.debug("Migrating (diff) overleaf revision %d->%d...", from_v, to_v)
         # Operate files on filesystem
-        filetree_diff = self.overleaf_broker.filetree_diff(from_v, to_v)
-        filetree_diff_entries = [entry for entry in filetree_diff if "operation" in entry]
+        filetree_diff_entries = [entry for entry in self.overleaf_broker.filetree_diff(from_v, to_v) if "operation" in entry]
         if any(not filetree_diff_entry.get("editable", True) for filetree_diff_entry in filetree_diff_entries):
             self.logger.debug("Some files are not editable, skipping migrating (diff)")
             return False
@@ -726,7 +723,7 @@ class OverleafProject:
             # Migrate the revision
             if not self._migrate_revision_diff(_from, _to):
                 self.logger.info("Switch to ZIP migration: %d", _to)
-                self._migrate_revision_zip(_to)
+                self._migrate_revision_zip(_from, _to)
             # Make git commit
             _name = f"{users[0]["last_name"]}, {users[0]["first_name"]}"
             _email = users[0]["email"]
