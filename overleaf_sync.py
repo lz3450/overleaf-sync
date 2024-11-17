@@ -489,16 +489,17 @@ class OverleafBroker:
             raise RuntimeError("Failed to fetch document IDs")
         return ids
 
+    def dump_original_file_ids(self) -> None:
+        with open(self.ids_file, "w") as f:
+            json.dump(self.original_file_ids, f)
+
     @property
     def original_file_ids(self) -> dict:
         if self._original_file_ids:
             return self._original_file_ids
         self._original_file_ids = self._get_original_file_ids()
+        self.dump_original_file_ids()
         return self._original_file_ids
-
-    def dump_original_file_ids(self) -> None:
-        with open(self.ids_file, "w") as f:
-            json.dump(self.original_file_ids, f)
 
     @property
     def root_folder_id(self) -> str:
