@@ -787,7 +787,8 @@ class OverleafProject:
         entries.remove(OVERLEAF_SYNC_DIR_NAME)
         if entries:
             self.logger.error(
-                "Working directory `%s` is not empty. Please clean up the directory first", os.path.realpath(self.working_dir)
+                "Working directory `%s` is not empty. Please clean up the directory first",
+                os.path.realpath(self.working_dir),
             )
             shutil.rmtree(self.overleaf_sync_dir)
             exit(ErrorNumber.WORKING_TREE_DIRTY_ERROR)
