@@ -829,7 +829,6 @@ class OverleafProject:
     def _git_repo_init(self) -> None:
         self.logger.info("Migrating all revisions...")
         self.git_broker.switch_to_overleaf_branch(create=True)
-        self.logger.info("Migrating the initial overleaf revision...")
         self._migrate_revisions(self.overleaf_broker.updates)
         self.git_broker.switch_to_working_branch(force=True)
 
