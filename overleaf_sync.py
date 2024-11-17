@@ -714,14 +714,6 @@ class OverleafProject:
             return False
         for filetree_diff_entry in filetree_diff_entries:
             pathname = filetree_diff_entry["pathname"]
-            # id, type = self.overleaf_broker.find_id_type(pathname)
-            # if id is None:
-            #     self.logger.debug("ID for `%s` not found\nSkipping migrating (diff)", pathname)
-            #     break
-            # assert type is not None
-            # if type != "doc":
-            #     self.logger.debug("File type `%s` not supported, skipping migrating (diff)", type)
-            #     break
             assert filetree_diff_entry.get("editable", True)
             _migrate(filetree_diff_entry, self.overleaf_broker.diff(from_v, to_v, pathname))
 
