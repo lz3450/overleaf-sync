@@ -663,7 +663,7 @@ class OverleafProject:
                 self.logger.debug("Deleting file %s from filesystem...", managed_file)
                 self._remove(managed_file)
 
-    def _migrate_revision_diff(self, from_v: int, to_v: int, ts: int, name: str, email: str) -> bool:
+    def _migrate_revision_diff(self, from_v: int, to_v: int) -> bool:
         """
         Migrate the overleaf revision to a git revision using diff requests.
         Note that this function is **not** responsible for switching branch.
@@ -708,55 +708,108 @@ class OverleafProject:
         self.logger.debug("Migrating (diff) overleaf revision %d->%d...", from_v, to_v)
         # Operate files on filesystem
         filetree_diff = self.overleaf_broker.filetree_diff(from_v, to_v)
-        for item in filetree_diff:
-            if not item.get("operation", None):
+        for filetree_diff_entry in filetree_diff:
+            if "operation" not in filetree_diff_entry:
                 continue
-            pathname = item["pathname"]
-            id, type = self.overleaf_broker.find_id_type(pathname)
-            if id is None:
+            pathname = filetree_diff_entry["pathname"]
+            # id, type = self.overleaf_broker.find_id_type(pathname)
+            # if id is None:
+            #     self.logger.debug("ID for `%s` not found\nSkipping migrating (diff)", pathname)
+            #     break
+            # assert type is not None
+            # if type != "doc":
+            #     self.logger.debug("File type `%s` not supported, skipping migrating (diff)", type)
+            #     break
+            if not filetree_diff_entry.get("editable", True):
+                self.logger.debug("File `%s` not editable, skipping migrating (diff)", pathname)
                 break
-            assert type is not None
-            self.logger.debug("Found file ID for `%s`: %s (%s)", pathname, id, type)
-            match type:
-                case "doc":
-                    _migrate(item, self.overleaf_broker.diff(from_v, to_v, pathname))
-                case "file":
-                    if not self.overleaf_broker.download_file(id, pathname):
-                        break
-                case "folder":
-                    raise ValueError("Folder migration not supported")
-                case _:
-                    raise ValueError(f"Unknown type: {type}")
+            _migrate(filetree_diff_entry, self.overleaf_broker.diff(from_v, to_v, pathname))
         else:
             return True
 
         return False
 
     def _migrate_revision(self, revision: dict) -> None:
+        """"""
+
+        def _migrate_and_commit(_from: int, _to: int, _ts: int, users: list[dict[str, str]]) -> None:
+            # Migrate the revision
+            if not self._migrate_revision_diff(_from, _to):
+                self.logger.info("Switch to ZIP migration: %d", _to)
+                self._migrate_revision_zip(_to)
+            # Make git commit
+            _name = f"{users[0]["last_name"]}, {users[0]["first_name"]}"
+            _email = users[0]["email"]
+            self.git_broker.add_all()
+            self.git_broker.commit(f"{_from}->{_to}", _ts, _name, _email)
+            self.logger.debug("Revision migrated: %d->%d", _from, _to)
+
+        def _get_filetree_diff_users_ts(from_: int, to_: int) -> tuple[list[dict[str, str]], int]:
+            _users = []
+            _ts = 0
+            seen_ids = set()
+            for filetree_diff in self.overleaf_broker.filetree_diff(from_, to_):
+                if "operation" not in filetree_diff:
+                    continue
+                for diff in self.overleaf_broker.diff(from_, to_, pathname=filetree_diff["pathname"]):
+                    if "i" in diff or "d" in diff:
+                        for u in diff["meta"]["users"]:
+                            if u["id"] not in seen_ids:
+                                _users.append(u)
+                                seen_ids.add(u["id"])
+                        _ts = max(_ts, diff["meta"]["end_ts"])
+            return _users, _ts
+
         fromV = revision["fromV"]
         toV = revision["toV"]
-        ts = revision["meta"]["end_ts"] // 1000
         users: list[dict[str, str]] = revision["meta"]["users"]
-        assert len(users) == 1
-        user = users[0]
-        name = f"{user.get("last_name", "")}, {user.get("first_name", "")}"
-        email = user["email"]
-        from_v = fromV
-        to_v = toV
-        #     for to_v in range(toV, fromV, -1):
-        #         rev = self.overleaf_broker.get_updates(before=to_v)[0]
-        #         if len(rev["meta"]["users"]) == 1:
-        #             break
-        #     else:
-        #         self.logger.error("Failed to find revision %d", fromV)
-        if not self._migrate_revision_diff(from_v, to_v, ts, name, email):
-            self.logger.info("Switch to ZIP migration: %d", toV)
-            self._migrate_revision_zip(from_v, to_v, ts, name, email)
 
-        # Make git commit
-        self.git_broker.add_all()
-        self.git_broker.commit(f"{from_v}->{to_v}", ts, name, email)
-        self.logger.debug("Revision migrated: %d->%d", from_v, to_v)
+        if len(users) == 1:
+            ts = revision["meta"]["end_ts"] // 1000
+            _migrate_and_commit(fromV, toV, ts, users)
+        else:
+            self.logger.debug("Multiple users detected")
+            # implementation 1: Too slow
+            # from_v = fromV
+            # while from_v < toV:
+            #     to_v = toV
+            #     for to_v in range(toV, from_v, -1):
+            #         users, ts = _get_filetree_diff_users_ts(from_v, to_v)
+            #         if len(users) == 1:
+            #             break
+            #     _migrate_and_commit(from_v, to_v, users[0])
+            #     from_v = to_v
+            # implementation 2: Too slow
+            # while (to_v := from_v) < toV:
+            #     for to_v in range(to_v, toV):
+            #         users, ts = _get_filetree_diff_users_ts(from_v, to_v)
+            #         if len(users) > 1:
+            #             break
+            #     else:
+            #         _migrate_and_commit(from_v, toV, users[0])
+
+            #     to_v -= 1
+            #     _migrate_and_commit(from_v, to_v, users[0])
+            #     from_v = to_v
+            # else:
+            #     users, ts = _get_filetree_diff_users_ts(from_v, toV)
+            #     _migrate_and_commit(from_v, toV, users[0])
+            from_v = fromV
+            users, ts = _get_filetree_diff_users_ts(fromV, fromV + 1)
+            assert len(users) == 1
+            start_user_id = users[0]["id"]
+            for v in range(fromV + 1, toV):
+                users, ts = _get_filetree_diff_users_ts(v, v + 1)
+                assert len(users) == 1
+                user = users[0]
+                user_id = user["id"]
+                if user_id != start_user_id:
+                    _migrate_and_commit(from_v, v, ts, users)
+                    from_v = v
+                    start_user_id = user_id
+            users, ts = _get_filetree_diff_users_ts(from_v, toV)
+            assert len(users) == 1
+            _migrate_and_commit(from_v, toV, ts, users)
 
     def _migrate_revisions(self, revisions: list[dict]) -> None:
         """
