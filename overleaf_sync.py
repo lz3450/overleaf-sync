@@ -692,7 +692,9 @@ class OverleafProject:
                     self._remove(path)
                 case "renamed":
                     self.logger.debug("Rename `%s`...", pathname)
-                    os.rename(path, os.path.join(self.working_dir, filetree_diff_entry["newPathname"]))
+                    new_path = os.path.join(self.working_dir, filetree_diff_entry["newPathname"])
+                    os.makedirs(os.path.dirname(new_path), exist_ok=True)
+                    os.rename(path, new_path)
                 case _:
                     raise ValueError(f"Unsupported operation: {operation}")
 
