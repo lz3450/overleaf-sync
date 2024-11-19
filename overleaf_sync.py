@@ -519,7 +519,11 @@ class OverleafBroker:
         if dry_run:
             return
 
-        relative_path = "null" if not os.path.dirname(pathname) else pathname
+        folder_id, type = self.find_id_type(os.path.dirname(pathname))
+        if folder_id is None:
+            folder_id = self.create_folder(os.path.dirname(pathname))
+        else:
+            assert type == "folder"
         file_name = os.path.basename(pathname)
 
         url = f"{PROJECTS_URL}/{self.project_id}/upload"
@@ -529,10 +533,16 @@ class OverleafBroker:
             "Referer": self.project_url,
             "X-CSRF-TOKEN": self.csrf_token,
         }
-        params = {"folder_id": self.root_folder_id}
-        data = {"relativePath": f"{relative_path}", "name": file_name, "type": "application/octet-stream"}
+        params = {"folder_id": folder_id}
+        data = {
+            "relativePath": "null",
+            "type": "application/octet-stream",
+            "name": file_name,
+        }
         with open(os.path.join(self.working_dir, pathname), "rb") as qqfile:
-            files = {"qqfile": (file_name, qqfile, "application/octet-stream")}
+            files = {
+                "qqfile": (file_name, qqfile, "application/octet-stream"),
+            }
             self._post(url, headers=headers, params=params, data=data, files=files)
 
     def _get_indexed_file_ids(self) -> dict[str, dict[str, str]]:
@@ -564,12 +574,17 @@ class OverleafBroker:
         self._original_file_ids = None
         self._indexed_file_ids = None
 
-    def create_folder(self, path: str, dry_run=False) -> None:
+    def create_folder(self, path: str, dry_run=False) -> str:
         self.logger.info("Creating folder %s...", path)
-        if dry_run:
-            return
+
         parent_folder_id, type = self.find_id_type(os.path.dirname(path))
-        assert type == "folder"
+        if parent_folder_id is None:
+            parent_folder_id = self.create_folder(os.path.dirname(path), dry_run=dry_run)
+        else:
+            assert type == "folder"
+
+        if dry_run:
+            return ""
 
         url = f"{self.project_url}/folder"
         headers = {
@@ -579,7 +594,8 @@ class OverleafBroker:
             "X-CSRF-TOKEN": self.csrf_token,
         }
         data = {"name": os.path.basename(path), "parent_folder_id": parent_folder_id}
-        self._post(url, headers=headers, data=data)
+        response_json = self._post(url, headers=headers, data=data).json()
+        return response_json["_id"]
 
     def delete(self, path: str, dry_run=False) -> None:
         id, type = self.find_id_type(path)
