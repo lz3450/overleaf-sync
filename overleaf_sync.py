@@ -908,6 +908,7 @@ class OverleafProject:
     def pull(self, stash=True, _rebase=True, _switch=True, dry_run=False) -> ErrorNumber:
         if not self.initialized:
             self.logger.error("Project not initialized. Please run `init` first")
+            shutil.rmtree(self.overleaf_sync_dir)
             return ErrorNumber.NOT_INITIALIZED_ERROR
 
         if not self.is_there_new_remote_overleaf_rev:
@@ -968,6 +969,7 @@ class OverleafProject:
     def push(self, prune=False, dry_run=False) -> ErrorNumber:
         if not self.initialized:
             self.logger.error("Project not initialized. Please run `init` first")
+            shutil.rmtree(self.overleaf_sync_dir)
             return ErrorNumber.NOT_INITIALIZED_ERROR
 
         # TODO: Implement prune
