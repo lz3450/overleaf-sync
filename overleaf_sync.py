@@ -173,7 +173,7 @@ class GitBroker:
         self("switch", self.working_branch)
 
     @property
-    def local_overleaf_rev(self) -> int:
+    def local_overleaf_version(self) -> int:
         """The latest overleaf update in local git repository"""
         return int(self("log", "-1", "--pretty=%B", self.overleaf_branch).split("->")[1])
 
@@ -331,7 +331,7 @@ class OverleafBroker:
         return self._updates
 
     @property
-    def remote_overleaf_rev(self) -> int:
+    def remote_overleaf_version(self) -> int:
         """The latest overleaf update in remote Overleaf project"""
         return self.updates[0]["toV"]
 
@@ -851,11 +851,11 @@ class OverleafProject:
 
     @property
     def is_there_new_remote_overleaf_rev(self) -> bool:
-        local_overleaf_rev = self.git_broker.local_overleaf_rev
-        remote_overleaf_rev = self.overleaf_broker.remote_overleaf_rev
-        self.logger.info("Fetched remote/local overleaf update: %d/%d", remote_overleaf_rev, local_overleaf_rev)
-        assert remote_overleaf_rev >= local_overleaf_rev
-        return remote_overleaf_rev > local_overleaf_rev
+        local_overleaf_version = self.git_broker.local_overleaf_version
+        remote_overleaf_version = self.overleaf_broker.remote_overleaf_version
+        self.logger.info("Fetched remote/local overleaf update: %d/%d", remote_overleaf_version, local_overleaf_version)
+        assert remote_overleaf_version >= local_overleaf_version
+        return remote_overleaf_version > local_overleaf_version
 
     def _pull_push_stash(self, stash=True) -> bool:
         if stash:
@@ -882,27 +882,28 @@ class OverleafProject:
     def _pull(self, dry_run=False) -> None:
         """Perform pull operation"""
         # Get all new overleaf updates
-        local_overleaf_rev = self.git_broker.local_overleaf_rev
-        upcoming_overleaf_revs = list(
-            takewhile(lambda rev: rev["toV"] > local_overleaf_rev, self.overleaf_broker.updates)
+        local_overleaf_version = self.git_broker.local_overleaf_version
+        upcoming_overleaf_versions = list(
+            takewhile(lambda rev: rev["toV"] > local_overleaf_version, self.overleaf_broker.updates)
         )
 
         # The corresponding remove overleaf update of latest local overleaf update may changed after the migration
         # For example, 63->67 may become 63->64, 64->68
-        if upcoming_overleaf_revs[-1]["fromV"] < local_overleaf_rev:
-            upcoming_overleaf_revs[-1]["fromV"] = local_overleaf_rev
+        if upcoming_overleaf_versions[-1]["fromV"] < local_overleaf_version:
+            assert upcoming_overleaf_versions[-1]["toV"] > local_overleaf_version
+            upcoming_overleaf_versions[-1]["fromV"] = local_overleaf_version
 
         self.logger.debug(
             "%d upcoming updates: %s",
-            len(upcoming_overleaf_revs),
-            ", ".join(f"{rev["fromV"]}->{rev["toV"]}" for rev in reversed(upcoming_overleaf_revs)),
+            len(upcoming_overleaf_versions),
+            ", ".join(f"{rev["fromV"]}->{rev["toV"]}" for rev in reversed(upcoming_overleaf_versions)),
         )
 
         if dry_run:
             return
 
         self.git_broker.switch_to_overleaf_branch()
-        self._migrate_updates(upcoming_overleaf_revs)
+        self._migrate_updates(upcoming_overleaf_versions)
         self.logger.debug("Current branch: %s", self.git_broker.current_branch)
 
     def pull(self, stash=True, dry_run=False) -> ErrorNumber:
@@ -991,7 +992,7 @@ class OverleafProject:
         self._pull(dry_run=dry_run)
         if not self.git_broker.is_identical_working_overleaf:
             self.logger.warning("Working branch is not identical to overleaf branch")
-        self.git_broker.tag_working_branch(str(self.git_broker.local_overleaf_rev))
+        self.git_broker.tag_working_branch(str(self.git_broker.local_overleaf_version))
         self.git_broker.rebase_working_branch()
         self._pull_push_stash_pop(stash)
 
