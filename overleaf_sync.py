@@ -659,10 +659,23 @@ class OverleafProject:
         except FileNotFoundError:
             self.logger.debug('File "%s" not found. Skipping...', path)
 
-    def _apply_changes_zip(self, to_v: int) -> None:
+    def _apply_changes_zip(self, to_v: int, filetree_diff_entries: list[dict]) -> None:
         """
         Fetch and apply the changes between two overleaf updates via downloaded ZIP.
         """
+        for filetree_diff_entry in filetree_diff_entries:
+            pathname = filetree_diff_entry["pathname"]
+            operation = filetree_diff_entry["operation"]
+            path = os.path.join(self.working_dir, pathname)
+            match operation:
+                case "removed":
+                    self.logger.debug("Remove `%s`...", pathname)
+                    self._remove(path)
+                case "renamed":
+                    self.logger.debug("Rename `%s`...", pathname)
+                    self._remove(path)
+                case _:
+                    pass
         try:
             self.overleaf_broker.download_zip(to_v)
         except requests.HTTPError as e:
@@ -716,8 +729,7 @@ class OverleafProject:
 
     def _migrate(self, from_v: int, to_v: int, ts: int, user: dict[str, str]) -> None:
         """
-        Migrate the overleaf update to a git update.
-        Note that this function is **not** responsible for switching branch.
+        Migrate the overleaf update from `from_v` to `to_v` to a git update.
         """
 
         self.logger.debug("Migrating overleaf update %d->%d...", from_v, to_v)
@@ -725,11 +737,13 @@ class OverleafProject:
         filetree_diff_entries = [
             entry for entry in self.overleaf_broker.filetree_diff(from_v, to_v) if "operation" in entry
         ]
-        if all(_.get("editable", True) or _["operation"] in ("removed", "renamed") for _ in filetree_diff_entries):
+
+        # if all(_.get("editable", True) or _["operation"] in ("removed", "renamed") for _ in filetree_diff_entries):
+        if all(self.overleaf_broker.find_id_type(_["pathname"])[1] == "doc" for _ in filetree_diff_entries):
             self._apply_changes_diff(from_v, to_v, filetree_diff_entries)
         else:
             self.logger.info("Switch to ZIP migration: %d", to_v)
-            self._apply_changes_zip(to_v)
+            self._apply_changes_zip(to_v, filetree_diff_entries)
 
         self.git_broker.add_all()
         self.git_broker.commit(
@@ -741,7 +755,11 @@ class OverleafProject:
         self.logger.debug("Update migrated: %d->%d", from_v, to_v)
 
     def _migrate_update(self, update: dict) -> None:
-        """"""
+        """
+        Migrate the given update to git update.
+        If there are multiple users in the update, split the update into multiple git updates.
+        Note that this function is **not** responsible for switching branch.
+        """
 
         def _get_filetree_diff_users_ts(from_: int, to_: int) -> tuple[list[dict[str, str]], int]:
             _users = []
