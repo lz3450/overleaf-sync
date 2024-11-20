@@ -905,7 +905,7 @@ class OverleafProject:
         self._migrate_updates(upcoming_overleaf_revs)
         self.logger.debug("Current branch: %s", self.git_broker.current_branch)
 
-    def pull(self, stash=True, _rebase=True, _switch=True, dry_run=False) -> ErrorNumber:
+    def pull(self, stash=True, dry_run=False) -> ErrorNumber:
         if not self.initialized:
             self.logger.error("Project not initialized. Please run `init` first")
             shutil.rmtree(self.overleaf_sync_dir)
