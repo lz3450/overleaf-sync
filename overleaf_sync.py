@@ -948,6 +948,8 @@ class OverleafProject:
         if self.git_broker.rebase_working_branch():
             self.logger.debug("Switching back to working branch without rebasing after pulling...")
             self.git_broker.switch_to_working_branch()
+        else:
+            return ErrorNumber.PULL_ERROR
         self._pull_push_stash_pop(stash)
 
         return ErrorNumber.OK
