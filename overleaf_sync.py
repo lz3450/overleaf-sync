@@ -519,11 +519,15 @@ class OverleafBroker:
         if dry_run:
             return
 
-        folder_id, type = self.find_id_type(os.path.dirname(pathname))
-        if folder_id is None:
-            folder_id = self.create_folder(os.path.dirname(pathname))
+        folder_name = os.path.dirname(pathname)
+        if folder_name != "":
+            folder_id, type = self.find_id_type(folder_name)
+            if folder_id is None:
+                folder_id = self.create_folder(folder_name)
+            else:
+                assert type == "folder"
         else:
-            assert type == "folder"
+            folder_id = self.root_folder_id
         file_name = os.path.basename(pathname)
 
         url = f"{PROJECTS_URL}/{self.project_id}/upload"
@@ -576,6 +580,7 @@ class OverleafBroker:
 
     def create_folder(self, path: str, dry_run=False) -> str:
         self.logger.info("Creating folder %s...", path)
+        assert path
 
         parent_folder_id, type = self.find_id_type(os.path.dirname(path))
         if parent_folder_id is None:
