@@ -410,6 +410,10 @@ class OverleafBroker:
 
     def find_id_type(self, pathname: str) -> tuple[str, str] | tuple[None, None]:
         self.logger.debug("Finding id for `%s`...", pathname)
+
+        if pathname == "":
+            return self.root_folder_id, "folder"
+
         ids = self.indexed_file_ids
         if pathname in ids["fileRefs"]:
             id, type = ids["fileRefs"][pathname], "file"
@@ -578,13 +582,17 @@ class OverleafBroker:
         self._original_file_ids = None
         self._indexed_file_ids = None
 
-    def create_folder(self, path: str, dry_run=False) -> str:
-        self.logger.info("Creating folder %s...", path)
-        assert path
+    def create_folder(self, pathname: str, dry_run=False) -> str:
+        self.logger.info("Creating folder %s...", pathname)
 
-        parent_folder_id, type = self.find_id_type(os.path.dirname(path))
+        if pathname == "":
+            return self.root_folder_id
+
+        # Check if the parent folder exists
+        dirname = os.path.dirname(pathname)
+        parent_folder_id, type = self.find_id_type(dirname)
         if parent_folder_id is None:
-            parent_folder_id = self.create_folder(os.path.dirname(path), dry_run=dry_run)
+            parent_folder_id = self.create_folder(dirname, dry_run=dry_run)
         else:
             assert type == "folder"
 
@@ -598,8 +606,10 @@ class OverleafBroker:
             "Referer": self.project_url,
             "X-CSRF-TOKEN": self.csrf_token,
         }
-        data = {"name": os.path.basename(path), "parent_folder_id": parent_folder_id}
+        data = {"name": os.path.basename(pathname), "parent_folder_id": parent_folder_id}
         response_json = self._post(url, headers=headers, data=data).json()
+        self.refresh_indexed_file_ids()
+        self.logger.info("Folder %s created", pathname)
         return response_json["_id"]
 
     def delete(self, path: str, dry_run=False) -> None:
