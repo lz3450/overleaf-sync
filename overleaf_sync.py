@@ -465,7 +465,7 @@ class OverleafBroker:
         return True
 
     def _get_original_file_ids(self) -> dict:
-        self.logger.debug("Fetching document IDs from Overleaf project %s...", self.project_id)
+        self.logger.debug("Fetching pathname IDs from Overleaf project %s...", self.project_id)
         response = self._get(f"{OVERLEAF_URL}/socket.io/1/?projectId={self.project_id}")
         ws_id = response.text.split(":")[0]
         ws = websocket.create_connection(
@@ -727,15 +727,15 @@ class OverleafProject:
             path = os.path.join(self.working_dir, pathname)
             match operation:
                 case "added" | "edited":
-                    self.logger.debug("Add/Edit `%s`...", pathname)
+                    self.logger.info("Add/Edit `%s`...", pathname)
                     os.makedirs(os.path.dirname(path), exist_ok=True)
                     with open(path, "w") as f:
                         f.write(_diff_to_content(self.overleaf_broker.diff(from_v, to_v, pathname)))
                 case "removed":
-                    self.logger.debug("Remove `%s`...", pathname)
+                    self.logger.info("Remove `%s`...", pathname)
                     self._remove(path)
                 case "renamed":
-                    self.logger.debug("Rename `%s`...", pathname)
+                    self.logger.info("Rename `%s`...", pathname)
                     new_path = os.path.join(self.working_dir, filetree_diff_entry["newPathname"])
                     os.makedirs(os.path.dirname(new_path), exist_ok=True)
                     os.rename(path, new_path)
