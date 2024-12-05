@@ -919,6 +919,7 @@ class OverleafProject:
         upcoming_overleaf_versions = list(
             takewhile(lambda rev: rev["toV"] > local_overleaf_version, self.overleaf_broker.updates)
         )
+        assert len(upcoming_overleaf_versions) > 0
 
         # The corresponding remove overleaf update of latest local overleaf update may changed after the migration
         # For example, 63->67 may become 63->64, 64->68
@@ -989,6 +990,8 @@ class OverleafProject:
                     upload_list.append(new_pathname)
                 case _:
                     raise ValueError(f"Unsupported status: {status}")
+
+        assert len(delete_list) + len(upload_list) > 0
 
         if prune:
             raise NotImplementedError("Prune is not implemented yet")
