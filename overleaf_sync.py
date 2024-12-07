@@ -855,7 +855,7 @@ class OverleafProject:
             assert len(users) == 1
             self._migrate(from_v, toV, ts, users[0])
 
-    def _migrate_updates(self, updates: list[dict]) -> None:
+    def _migrate_updates(self, updates: list[dict], dry_run=False) -> None:
         """
         Migrate all the given updates to git updates.
         Note that this function is **not** responsible for switching branch.
@@ -864,7 +864,8 @@ class OverleafProject:
         log_msg = f"Migrating overleaf update %{len(str(update_length))}d/{update_length}: %d->%d"
         for i, update in enumerate(reversed(updates)):
             self.logger.info(log_msg, i + 1, update["fromV"], update["toV"])
-            self._migrate_update(update)
+            if not dry_run:
+                self._migrate_update(update)
 
     @property
     def new_working_commit_exists(self) -> bool:
@@ -964,8 +965,8 @@ class OverleafProject:
             return
 
         self.git_broker.switch_to_overleaf_branch()
-        self._migrate_updates(upcoming_overleaf_versions)
-        self.logger.debug("Current branch: %s", self.git_broker.current_branch)
+        self._migrate_updates(upcoming_overleaf_versions, dry_run=dry_run)
+        self.logger.debug("Current branch (after `pull`): %s", self.git_broker.current_branch)
 
     def pull(self, stash=True, dry_run=False) -> ErrorNumber:
         if not self.initialized:
