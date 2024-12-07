@@ -636,6 +636,33 @@ class OverleafBroker:
             raise ValueError(f"Invalid type: {type}")
         self._delete(url, headers=headers)
 
+    def set_label(self, version: int, label: str) -> None:
+        self.logger.info("Labelling version %d as `%s`...", version, label)
+        url = f"{PROJECTS_URL}/{self.project_id}/label"
+        headers = {
+            "Accept": "application/json",
+            "Origin": OVERLEAF_URL,
+            "Referer": self.project_url,
+            "X-CSRF-TOKEN": self.csrf_token,
+        }
+        data = {
+            "comment": label,
+            "version": version,
+        }
+        self._post(url, headers=headers, data=data)
+        self.logger.info("Version %d labelled as `%s`", version, label)
+
+    def get_labels(self) -> dict:
+        self.logger.debug("Fetching labels...")
+        url = f"{PROJECTS_URL}/{self.project_id}/labels"
+        headers = {
+            "Accept": "application/json",
+            "Referer": self.project_url,
+            "X-CSRF-TOKEN": self.csrf_token,
+        }
+        response = self._get(url, headers=headers)
+        return response.json()
+
 
 class OverleafProject:
     logger = logging.getLogger(__qualname__)
