@@ -235,6 +235,7 @@ class OverleafBroker:
         self.updates_file = os.path.join(self.overleaf_sync_dir, "updates.json")
         self.overleaf_zip = os.path.join(self.overleaf_sync_dir, "overleaf.zip")
         self.ids_file = os.path.join(self.overleaf_sync_dir, "ids.json")
+        self.indexed_ids_file = os.path.join(self.overleaf_sync_dir, "indexed_ids.json")
         self._session = requests.Session()
         self._session.headers.update(
             {
@@ -492,16 +493,13 @@ class OverleafBroker:
             raise RuntimeError("Failed to fetch document IDs")
         return ids
 
-    def dump_original_file_ids(self) -> None:
-        with open(self.ids_file, "w") as f:
-            json.dump(self.original_file_ids, f)
-
     @property
     def original_file_ids(self) -> dict:
         if self._original_file_ids:
             return self._original_file_ids
         self._original_file_ids = self._get_original_file_ids()
-        self.dump_original_file_ids()
+        with open(self.ids_file, "w") as f:
+            json.dump(self._original_file_ids, f)
         return self._original_file_ids
 
     @property
@@ -575,6 +573,8 @@ class OverleafBroker:
         if self._indexed_file_ids:
             return self._indexed_file_ids
         self._indexed_file_ids = self._get_indexed_file_ids()
+        with open(self.indexed_ids_file, "w") as f:
+            json.dump(self._indexed_file_ids, f)
         return self._indexed_file_ids
 
     def refresh_indexed_file_ids(self) -> None:
