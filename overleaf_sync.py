@@ -20,6 +20,7 @@ import websocket
 import urllib.parse
 import traceback
 
+from pathlib import Path
 from itertools import takewhile
 from enum import IntEnum, unique
 from time import sleep, time
@@ -415,7 +416,7 @@ class OverleafBroker:
         if pathname == "":
             return self.root_folder_id, "folder"
 
-        ids = self.indexed_file_ids
+        ids = self.indexed_ids
         if pathname in ids["fileRefs"]:
             id, type = ids["fileRefs"][pathname], "file"
         elif pathname in ids["docs"]:
@@ -465,7 +466,7 @@ class OverleafBroker:
         self.logger.debug("Succeed to download doc file %s...", pathname)
         return True
 
-    def _get_original_file_ids(self) -> dict:
+    def _get_root_folder_json(self) -> dict:
         self.logger.debug("Fetching pathname IDs from Overleaf project %s...", self.project_id)
         response = self._get(f"{OVERLEAF_URL}/socket.io/1/?projectId={self.project_id}")
         ws_id = response.text.split(":")[0]
@@ -494,10 +495,10 @@ class OverleafBroker:
         return ids
 
     @property
-    def original_file_ids(self) -> dict:
+    def root_folder_json(self) -> dict:
         if self._original_file_ids:
             return self._original_file_ids
-        self._original_file_ids = self._get_original_file_ids()
+        self._original_file_ids = self._get_root_folder_json()
         with open(self.ids_file, "w") as f:
             json.dump(self._original_file_ids, f)
         return self._original_file_ids
@@ -507,7 +508,7 @@ class OverleafBroker:
         # return self._root_folder_id if self._root_folder_id else hex(int(self._project_id, 16) - 1)[2:].lower()
         if self._root_folder_id:
             return self._root_folder_id
-        self._root_folder_id = self.original_file_ids["_id"]
+        self._root_folder_id = self.root_folder_json["_id"]
         if not self._root_folder_id:
             raise RuntimeError("Failed to fetch root folder ID")
         return self._root_folder_id
@@ -551,28 +552,27 @@ class OverleafBroker:
             }
             self._post(url, headers=headers, params=params, data=data, files=files)
 
-    def _get_indexed_file_ids(self) -> dict[str, dict[str, str]]:
+    def _get_indexed_ids(self) -> dict[str, dict[str, str]]:
         ids: dict[str, dict[str, str]] = {"folders": {}, "fileRefs": {}, "docs": {}}
 
-        def _restructure(folder_data: dict, current_folder="") -> None:
-            if folder_data["_id"] != self.root_folder_id:
-                current_folder = f'{current_folder}{folder_data["name"]}/'
-            for folder in folder_data.get("folders", []):
-                ids["folders"][f'{current_folder}{folder["name"]}'] = folder["_id"]
-                _restructure(folder, current_folder)
-            for doc in folder_data.get("docs", []):
-                ids["docs"][f'{current_folder}{doc["name"]}'] = doc["_id"]
-            for file_ref in folder_data.get("fileRefs", []):
-                ids["fileRefs"][f'{current_folder}{file_ref["name"]}'] = file_ref["_id"]
+        def _restructure(folder_json: dict, current_folder_pathname="") -> None:
+            for sub_folder in folder_json["folders"]:
+                sub_folder_pathname = f'{current_folder_pathname}{sub_folder["name"]}'
+                ids["folders"][sub_folder_pathname] = sub_folder["_id"]
+                _restructure(sub_folder, f"{sub_folder_pathname}/")
+            for doc in folder_json["docs"]:
+                ids["docs"][f'{current_folder_pathname}{doc["name"]}'] = doc["_id"]
+            for file_ref in folder_json["fileRefs"]:
+                ids["fileRefs"][f'{current_folder_pathname}{file_ref["name"]}'] = file_ref["_id"]
 
-        _restructure(self.original_file_ids)
+        _restructure(self.root_folder_json)
         return ids
 
     @property
-    def indexed_file_ids(self) -> dict[str, dict[str, str]]:
+    def indexed_ids(self) -> dict[str, dict[str, str]]:
         if self._indexed_file_ids:
             return self._indexed_file_ids
-        self._indexed_file_ids = self._get_indexed_file_ids()
+        self._indexed_file_ids = self._get_indexed_ids()
         with open(self.indexed_ids_file, "w") as f:
             json.dump(self._indexed_file_ids, f)
         return self._indexed_file_ids
@@ -612,12 +612,12 @@ class OverleafBroker:
         self.logger.info("Folder %s created", pathname)
         return response_json["_id"]
 
-    def delete(self, path: str, dry_run=False) -> None:
-        id, type = self.find_id_type(path)
-        self.logger.info("Deleting `%s`: %s %s", type, path, id)
+    def delete(self, pathname: str, dry_run=False) -> None:
+        id, type = self.find_id_type(pathname)
+        self.logger.info("Deleting `%s`(%s): %s", pathname, type, id)
 
         if type == "folder" and input(
-            f"Are you sure you want to delete folder {path}? (y/n): "
+            f"Are you sure you want to delete folder {pathname}? (y/n): "
         ).strip().lower() not in ["y", "yes"]:
             self.logger.info("Operation cancelled")
             return
@@ -780,8 +780,8 @@ class OverleafProject:
             entry for entry in self.overleaf_broker.filetree_diff(from_v, to_v) if "operation" in entry
         ]
 
-        # if all(_.get("editable", True) or _["operation"] in ("removed", "renamed") for _ in filetree_diff_entries):
-        if all(self.overleaf_broker.find_id_type(_["pathname"])[1] == "doc" for _ in filetree_diff_entries):
+        if all(_.get("editable", True) or _["operation"] in ("removed", "renamed") for _ in filetree_diff_entries):
+            # if all(self.overleaf_broker.find_id_type(_["pathname"])[1] == "doc" for _ in filetree_diff_entries):
             self._apply_changes_diff(from_v, to_v, filetree_diff_entries)
         else:
             self.logger.info("Switch to ZIP migration: %d", to_v)
@@ -940,7 +940,7 @@ class OverleafProject:
                 self.logger.info("Pop'ing stashed changes...")
                 self.git_broker.stash_pop_working()
 
-    def _pull(self, dry_run=False) -> None:
+    def _pull(self, dry_run: bool) -> None:
         """Perform pull operation"""
         # Get all new overleaf updates
         local_overleaf_version = self.git_broker.local_overleaf_version
@@ -961,20 +961,25 @@ class OverleafProject:
             ", ".join(f"{rev["fromV"]}->{rev["toV"]}" for rev in reversed(upcoming_overleaf_versions)),
         )
 
-        if dry_run:
-            return
-
         self.git_broker.switch_to_overleaf_branch()
         self._migrate_updates(upcoming_overleaf_versions, dry_run=dry_run)
         self.logger.debug("Current branch (after `pull`): %s", self.git_broker.current_branch)
 
-    def pull(self, stash=True, dry_run=False) -> ErrorNumber:
+    def _pull_prune(self, dry_run: bool) -> None:
+        remote_overleaf_folders = self.overleaf_broker.indexed_ids["folders"].keys()
+        for folder in (_ for _ in Path(self.working_dir).iterdir() if _.is_dir()):
+            if folder.name != ".git" and folder.name != OVERLEAF_SYNC_DIR_NAME and folder.name not in remote_overleaf_folders:
+                self.logger.info("Pruning local folder `%s`...", folder)
+                if not dry_run:
+                    folder.rmdir()
+
+    def pull(self, stash=True, prune=False, dry_run=False) -> ErrorNumber:
         if not self.initialized:
             self.logger.error("Project not initialized. Please run `init` first")
             shutil.rmtree(self.overleaf_sync_dir)
             return ErrorNumber.NOT_INITIALIZED_ERROR
 
-        if not self.is_there_new_remote_overleaf_rev:
+        if not self.is_there_new_remote_overleaf_rev and not prune:
             self.logger.info("No new changes to pull")
             return ErrorNumber.OK
 
@@ -982,7 +987,10 @@ class OverleafProject:
         # Reuse `stash` to check if there are stashed changes
         stash = self._pull_push_stash(stash)
         self.logger.info("Pulling changes from Overleaf...")
-        self._pull(dry_run=dry_run)
+        if self.is_there_new_remote_overleaf_rev:
+            self._pull(dry_run=dry_run)
+        if prune:
+            self._pull_prune(dry_run=dry_run)
         self.logger.debug("Rebasing working branch after pulling...")
         if self.git_broker.rebase_working_branch():
             self.logger.debug("Switching back to working branch without rebasing after pulling...")
@@ -993,7 +1001,33 @@ class OverleafProject:
 
         return ErrorNumber.OK
 
-    def _push(self, prune=False, dry_run=False) -> None:
+    @property
+    def empty_folders(self) -> list[str]:
+        empty_folders: list[str] = []
+
+        def _traverse_folders(folder_json: dict, parent_folder_pathname: str = "") -> None:
+            folder_pathname = (
+                f'{parent_folder_pathname}/{folder_json["name"]}' if parent_folder_pathname else folder_json["name"]
+            )
+
+            for sub_folder in folder_json["folders"]:
+                _traverse_folders(sub_folder, folder_pathname)
+                if sub_folder["_id"] not in empty_folders:
+                    all_sub_folders_empty = False
+                    break
+            else:
+                all_sub_folders_empty = True
+
+            if all_sub_folders_empty and not folder_json["fileRefs"] and not folder_json["docs"]:
+                empty_folders.append(folder_pathname)
+
+        # Start checking from the root level folders
+        for folder in self.overleaf_broker.root_folder_json["folders"]:
+            _traverse_folders(folder)
+
+        return empty_folders
+
+    def _push(self, dry_run: bool) -> None:
         """Perform push operation"""
         self.git_broker.switch_to_working_branch()
         delete_list: list[str] = []
@@ -1021,9 +1055,6 @@ class OverleafProject:
 
         assert len(delete_list) + len(upload_list) > 0
 
-        if prune:
-            raise NotImplementedError("Prune is not implemented yet")
-
         for pathname in delete_list:
             self.overleaf_broker.delete(pathname, dry_run)
         for pathname in upload_list:
@@ -1033,16 +1064,23 @@ class OverleafProject:
         self.overleaf_broker.refresh_updates()
         self.overleaf_broker.refresh_indexed_file_ids()
 
+    def _push_prune(self, dry_run: bool) -> None:
+        for pathname in self.empty_folders:
+            self.overleaf_broker.delete(pathname, dry_run)
+
     def push(self, prune=False, dry_run=False) -> ErrorNumber:
         if not self.initialized:
             self.logger.error("Project not initialized. Please run `init` first")
             shutil.rmtree(self.overleaf_sync_dir)
             return ErrorNumber.NOT_INITIALIZED_ERROR
 
-        # TODO: Implement prune
+        if prune:
+            self.logger.info("Pruning empty folders from overleaf...")
+            self._push_prune(dry_run)
+            return ErrorNumber.OK
 
         # Check if there are new changes to push
-        if not self.new_working_commit_exists:
+        if not self.new_working_commit_exists and not prune:
             self.logger.info("No new changes to push")
             return ErrorNumber.OK
 
@@ -1054,8 +1092,12 @@ class OverleafProject:
         # Perform stash before pushing to prevent uncommitted changes in working branch
         # Reuse `stash` to check if there are stashed changes
         stash = self._pull_push_stash()
-        self._push(prune=prune, dry_run=dry_run)
-        self._pull(dry_run=dry_run)
+        if self.new_working_commit_exists:
+            self._push(dry_run=dry_run)
+            self._pull(dry_run=dry_run)
+        if prune:
+            self._push_prune(dry_run=dry_run)
+            self._pull_prune(dry_run=dry_run)
         if not self.git_broker.is_identical_working_overleaf:
             self.logger.warning("Working branch is not identical to overleaf branch")
         self.git_broker.tag_working_branch(str(self.git_broker.local_overleaf_version))
@@ -1088,6 +1130,7 @@ if __name__ == "__main__":
     pull_parser.add_argument(
         "-n", "--no-stash", action="store_true", help="Do not stash changes in the working branch before "
     )
+    pull_parser.add_argument("-p", "--prune", action="store_true", help="Prune empty folders")
     pull_parser.add_argument("-d", "--dry-run", action="store_true", help="Dry run mode")
 
     push_parser = subparsers.add_parser("push", help="Push changes to Overleaf project")
@@ -1112,7 +1155,7 @@ if __name__ == "__main__":
         case "init":
             exit(project.init(username=args.username, password=args.password, project_id=args.project_id))
         case "pull":
-            exit(project.pull(stash=(not args.no_stash), dry_run=args.dry_run))
+            exit(project.pull(stash=(not args.no_stash), prune=args.prune, dry_run=args.dry_run))
         case "push":
             exit(project.push(prune=args.prune, dry_run=args.dry_run))
         case "sync":
