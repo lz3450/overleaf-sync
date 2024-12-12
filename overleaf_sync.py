@@ -911,7 +911,7 @@ class OverleafProject:
         return ErrorNumber.OK
 
     @property
-    def is_there_new_remote_overleaf_rev(self) -> bool:
+    def new_remote_overleaf_rev(self) -> bool:
         local_overleaf_version = self.git_broker.local_overleaf_version
         remote_overleaf_version = self.overleaf_broker.remote_overleaf_version
         self.logger.info("Fetched remote/local overleaf update: %d/%d", remote_overleaf_version, local_overleaf_version)
@@ -979,7 +979,8 @@ class OverleafProject:
             shutil.rmtree(self.overleaf_sync_dir)
             return ErrorNumber.NOT_INITIALIZED_ERROR
 
-        if not self.is_there_new_remote_overleaf_rev and not prune:
+        new_remote_overleaf_rev = self.new_remote_overleaf_rev
+        if not new_remote_overleaf_rev and not prune:
             self.logger.info("No new changes to pull")
             return ErrorNumber.OK
 
@@ -987,7 +988,7 @@ class OverleafProject:
         # Reuse `stash` to check if there are stashed changes
         stash = self._pull_push_stash(stash)
         self.logger.info("Pulling changes from Overleaf...")
-        if self.is_there_new_remote_overleaf_rev:
+        if new_remote_overleaf_rev:
             self._pull(dry_run=dry_run)
         if prune:
             self._pull_prune(dry_run=dry_run)
@@ -1085,7 +1086,7 @@ class OverleafProject:
             return ErrorNumber.OK
 
         # Check if there are new changes in remote overleaf
-        if self.is_there_new_remote_overleaf_rev:
+        if self.new_remote_overleaf_rev:
             self.logger.error("There are new remote overleaf updates. Please pull first")
             return ErrorNumber.PUSH_ERROR
 
