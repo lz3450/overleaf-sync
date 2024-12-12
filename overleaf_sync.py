@@ -1107,10 +1107,10 @@ class OverleafProject:
 
         return ErrorNumber.OK
 
-    def sync(self) -> ErrorNumber:
-        if (result := self.pull()) != ErrorNumber.OK:
+    def sync(self, prune=False, dry_run=False) -> ErrorNumber:
+        if (result := self.pull(prune=prune, dry_run=dry_run)) != ErrorNumber.OK:
             return result
-        if (result := self.push()) != ErrorNumber.OK:
+        if (result := self.push(prune=prune, dry_run=dry_run)) != ErrorNumber.OK:
             return result
         return ErrorNumber.OK
 
@@ -1139,6 +1139,8 @@ if __name__ == "__main__":
     push_parser.add_argument("-d", "--dry-run", action="store_true", help="Dry run mode")
 
     sync_parser = subparsers.add_parser("sync", help="Sync changes between Overleaf project and local git repo")
+    sync_parser.add_argument("-p", "--prune", action="store_true", help="Prune empty folders")
+    sync_parser.add_argument("-d", "--dry-run", action="store_true", help="Dry run mode")
 
     args = parser.parse_args()
 
@@ -1160,6 +1162,6 @@ if __name__ == "__main__":
         case "push":
             exit(project.push(prune=args.prune, dry_run=args.dry_run))
         case "sync":
-            exit(project.sync())
+            exit(project.sync(prune=args.prune, dry_run=args.dry_run))
         case _:
             parser.print_help()
