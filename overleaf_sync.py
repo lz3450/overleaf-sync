@@ -1,4 +1,4 @@
-#!/usr/bin/env python3.12
+#!/opt/bin/python3
 
 ################################################################
 ### Name: overleaf-sync.py
@@ -190,7 +190,7 @@ class GitBroker:
         self._update_working_branch_start_commit()
         if "CONFLICT" in result:
             self.logger.error(
-                "Failed to rebase `%s` to `%s`.\n" "%s\n" "Fix conflicts and run `git rebase --continue`",
+                "Failed to rebase `%s` to `%s`.\n%s\nFix conflicts and run `git rebase --continue`",
                 self.working_branch,
                 self.overleaf_branch,
                 result,
@@ -557,13 +557,13 @@ class OverleafBroker:
 
         def _restructure(folder_json: dict, current_folder_pathname="") -> None:
             for sub_folder in folder_json["folders"]:
-                sub_folder_pathname = f'{current_folder_pathname}{sub_folder["name"]}'
+                sub_folder_pathname = f"{current_folder_pathname}{sub_folder['name']}"
                 ids["folders"][sub_folder_pathname] = sub_folder["_id"]
                 _restructure(sub_folder, f"{sub_folder_pathname}/")
             for doc in folder_json["docs"]:
-                ids["docs"][f'{current_folder_pathname}{doc["name"]}'] = doc["_id"]
+                ids["docs"][f"{current_folder_pathname}{doc['name']}"] = doc["_id"]
             for file_ref in folder_json["fileRefs"]:
-                ids["fileRefs"][f'{current_folder_pathname}{file_ref["name"]}'] = file_ref["_id"]
+                ids["fileRefs"][f"{current_folder_pathname}{file_ref['name']}"] = file_ref["_id"]
 
         _restructure(self.root_folder_json)
         return ids
@@ -791,7 +791,7 @@ class OverleafProject:
         self.git_broker.commit(
             f"{from_v}->{to_v}",
             ts,
-            f"{user.get("last_name", "")}, {user.get("first_name", "")}",
+            f"{user.get('last_name', '')}, {user.get('first_name', '')}",
             user.get("email", ""),
         )
         self.logger.debug("Update migrated: %d->%d", from_v, to_v)
@@ -958,7 +958,7 @@ class OverleafProject:
         self.logger.debug(
             "%d upcoming updates: %s",
             len(upcoming_overleaf_versions),
-            ", ".join(f"{rev["fromV"]}->{rev["toV"]}" for rev in reversed(upcoming_overleaf_versions)),
+            ", ".join(f"{rev['fromV']}->{rev['toV']}" for rev in reversed(upcoming_overleaf_versions)),
         )
 
         self.git_broker.switch_to_overleaf_branch()
@@ -968,7 +968,11 @@ class OverleafProject:
     def _pull_prune(self, dry_run: bool) -> None:
         remote_overleaf_folders = self.overleaf_broker.indexed_ids["folders"].keys()
         for folder in (_ for _ in Path(self.working_dir).iterdir() if _.is_dir()):
-            if folder.name != ".git" and folder.name != OVERLEAF_SYNC_DIR_NAME and folder.name not in remote_overleaf_folders:
+            if (
+                folder.name != ".git"
+                and folder.name != OVERLEAF_SYNC_DIR_NAME
+                and folder.name not in remote_overleaf_folders
+            ):
                 self.logger.info("Pruning local folder `%s`...", folder)
                 if not dry_run:
                     folder.rmdir()
@@ -1008,7 +1012,7 @@ class OverleafProject:
 
         def _traverse_folders(folder_json: dict, parent_folder_pathname: str = "") -> None:
             folder_pathname = (
-                f'{parent_folder_pathname}/{folder_json["name"]}' if parent_folder_pathname else folder_json["name"]
+                f"{parent_folder_pathname}/{folder_json['name']}" if parent_folder_pathname else folder_json["name"]
             )
 
             for sub_folder in folder_json["folders"]:
