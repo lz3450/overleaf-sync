@@ -769,7 +769,7 @@ class OverleafProject:
                 case _:
                     raise ValueError(f"Unsupported operation: {operation}")
 
-    def _migrate(self, from_v: int, to_v: int, ts: int, user: dict[str, str]) -> None:
+    def _migrate(self, from_v: int, to_v: int, ts: int, user: dict[str, str] | None = None) -> None:
         """
         Migrate the overleaf update from `from_v` to `to_v` to a git update.
         """
@@ -791,8 +791,8 @@ class OverleafProject:
         self.git_broker.commit(
             f"{from_v}->{to_v}",
             ts,
-            f"{user.get('last_name', '')}, {user.get('first_name', '')}",
-            user.get("email", ""),
+            f"{user.get('last_name', '')}, {user.get('first_name', '')}" if user else "Unknown",
+            user.get("email", "") if user else "Unknown",
         )
         self.logger.debug("Successfully migrated overleaf update %d->%d", from_v, to_v)
 
@@ -829,31 +829,62 @@ class OverleafProject:
         else:
             self.logger.debug("Multiple users detected: %s", "; ".join([f"{u['last_name']}, {u['first_name']}" for u in users]))
             from_v = fromV
-            # There exists cases that there is no modification in the diff, so no users
-            # For example, (fromV, fromV + 1) no modification, but (fromV, fromV + 2) has modification
-            for to_v in range(fromV + 1, toV):
-                users, ts = _get_filetree_diff_users_ts(fromV, to_v)
-                if len(users) == 1:
-                    first_user_id = users[0]["id"]
-                    break
-            else:
-                # not possible
-                raise ValueError("No user found in the update")
-            for v in range(to_v, toV):
-                users, ts = _get_filetree_diff_users_ts(v, v + 1)
+            ts = update["meta"]["end_ts"]
+            current_user: dict | None = None
+            for v in range(from_v + 1, toV):
+                users, ts = _get_filetree_diff_users_ts(from_v, v)
                 if len(users) == 0:
                     # There exists cases that there is no modification in the diff, so no users
                     continue
-                assert len(users) == 1
-                user = users[0]
-                user_id = user["id"]
-                if user_id != first_user_id:
-                    self._migrate(from_v, v, ts, users[0])
-                    from_v = v
-                    first_user_id = user_id
-            users, ts = _get_filetree_diff_users_ts(from_v, toV)
-            assert len(users) == 1
-            self._migrate(from_v, toV, ts, users[0])
+                elif len(users) == 1:
+                    if current_user is None:
+                        current_user = users[0]
+                    elif current_user["id"] != users[0]["id"]:
+                        assert v - 1 > from_v, "There should be at least one update before this"
+                        self._migrate(from_v, v - 1, ts, current_user)
+                        from_v = v - 1
+                        current_user = users[0]
+                    # else: continue  # current user is the same, no need to migrate
+                elif len(users) == 2:
+                    assert v - 1 > from_v, "There should be at least one update before this"
+                    assert current_user is not None, "Current user should be set"
+                    self._migrate(from_v, v - 1, ts, current_user)
+                    from_v = v - 1
+                    # get the other user
+                    current_user = next(user for user in users if user is not current_user)
+                else:
+                    # not possible
+                    raise ValueError("Too many users (%d) in the update", len(users))
+            else:
+                self._migrate(from_v, toV, ts, current_user)
+
+
+
+            # There exists cases that there is no modification in the diff, so no users
+            # For example, (fromV, fromV + 1) no modification, but (fromV, fromV + 2) has modification
+            # for to_v in range(fromV + 1, toV):
+            #     users, ts = _get_filetree_diff_users_ts(fromV, to_v)
+            #     if len(users) == 1:
+            #         first_user_id = users[0]["id"]
+            #         break
+            # else:
+            #     # not possible
+            #     raise ValueError("No user found in the update")
+            # for v in range(to_v, toV):
+            #     users, ts = _get_filetree_diff_users_ts(v, v + 1)
+            #     if len(users) == 0:
+            #         # There exists cases that there is no modification in the diff, so no users
+            #         continue
+            #     assert len(users) == 1
+            #     user = users[0]
+            #     user_id = user["id"]
+            #     if user_id != first_user_id:
+            #         self._migrate(from_v, v, ts, users[0])
+            #         from_v = v
+            #         first_user_id = user_id
+            # users, ts = _get_filetree_diff_users_ts(from_v, toV)
+            # assert len(users) == 1
+            # self._migrate(from_v, toV, ts, users[0])
 
     def _migrate_updates(self, updates: list[dict], dry_run=False) -> None:
         """
