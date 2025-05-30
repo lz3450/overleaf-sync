@@ -806,16 +806,16 @@ class OverleafProject:
         def _get_filetree_diff_users_ts(from_: int, to_: int) -> tuple[list[dict[str, str]], int]:
             _users = []
             _ts = 0
-            seen_ids = set()
+            _seen_ids = set()
             for filetree_diff in self.overleaf_broker.filetree_diff(from_, to_):
                 if "operation" not in filetree_diff:
                     continue
                 for diff in self.overleaf_broker.diff(from_, to_, pathname=filetree_diff["pathname"]):
                     if "i" in diff or "d" in diff:
                         for u in diff["meta"]["users"]:
-                            if u["id"] not in seen_ids:
+                            if u["id"] not in _seen_ids:
                                 _users.append(u)
-                                seen_ids.add(u["id"])
+                                _seen_ids.add(u["id"])
                         _ts = max(_ts, diff["meta"]["end_ts"])
             return _users, _ts
 
@@ -834,23 +834,23 @@ class OverleafProject:
             for to_v in range(fromV + 1, toV):
                 users, ts = _get_filetree_diff_users_ts(fromV, to_v)
                 if len(users) == 1:
-                    start_user_id = users[0]["id"]
+                    first_user_id = users[0]["id"]
                     break
             else:
                 # not possible
                 raise ValueError("No user found in the update")
             for v in range(to_v, toV):
                 users, ts = _get_filetree_diff_users_ts(v, v + 1)
-                if not users:
+                if len(users) == 0:
                     # There exists cases that there is no modification in the diff, so no users
                     continue
                 assert len(users) == 1
                 user = users[0]
                 user_id = user["id"]
-                if user_id != start_user_id:
+                if user_id != first_user_id:
                     self._migrate(from_v, v, ts, users[0])
                     from_v = v
-                    start_user_id = user_id
+                    first_user_id = user_id
             users, ts = _get_filetree_diff_users_ts(from_v, toV)
             assert len(users) == 1
             self._migrate(from_v, toV, ts, users[0])
