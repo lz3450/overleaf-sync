@@ -389,7 +389,7 @@ class OverleafBroker:
         return self._csrf_token
 
     def filetree_diff(self, from_: int, to_: int) -> list[dict]:
-        self.logger.debug("Fetching filetree diff from %d to %d...", from_, to_)
+        self.logger.debug("Fetching filetree diff: %d->%d", from_, to_)
         url = f"{PROJECTS_URL}/{self.project_id}/filetree/diff?from={from_}&to={to_}"
         headers = {
             "Accept": "application/json",
@@ -794,7 +794,7 @@ class OverleafProject:
             f"{user.get('last_name', '')}, {user.get('first_name', '')}",
             user.get("email", ""),
         )
-        self.logger.debug("Update migrated: %d->%d", from_v, to_v)
+        self.logger.debug("Successfully migrated overleaf update %d->%d", from_v, to_v)
 
     def _migrate_update(self, update: dict) -> None:
         """
@@ -827,7 +827,7 @@ class OverleafProject:
             ts = update["meta"]["end_ts"] // 1000
             self._migrate(fromV, toV, ts, users[0])
         else:
-            self.logger.debug("Multiple users detected")
+            self.logger.debug("Multiple users detected: %s" % "; ".join([f"{u['last_name']}, {u['first_name']}" for u in users]))
             from_v = fromV
             # There exists cases that there is no modification in the diff, so no users
             # For example, (fromV, fromV + 1) no modification, but (fromV, fromV + 2) has modification
