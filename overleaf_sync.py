@@ -295,7 +295,7 @@ class OverleafBroker:
         payload = {"email": self.username, "password": self.password, "_csrf": csrf_token}
         response = self._session.post(LOGIN_URL, data=payload)
         self._logged_in = True
-        self.logger.info("Login successful")
+        self.logger.info("Successfully logged in to Overleaf")
 
     def _get_updates(self, before=0) -> tuple[list[dict], int]:
         url = (
@@ -400,7 +400,7 @@ class OverleafBroker:
         return response.json()["diff"]
 
     def diff(self, from_: int, to_: int, pathname: str) -> list[dict]:
-        self.logger.debug("Fetching diff of file `%s` from %d to %d...", pathname, from_, to_)
+        self.logger.debug("Fetching file `%s` diff: %d->%d", pathname, from_, to_)
         url = f"{PROJECTS_URL}/{self.project_id}/diff?from={from_}&to={to_}&pathname={urllib.parse.quote(pathname)}"
         headers = {
             "Accept": "application/json",
@@ -827,7 +827,7 @@ class OverleafProject:
             ts = update["meta"]["end_ts"] // 1000
             self._migrate(fromV, toV, ts, users[0])
         else:
-            self.logger.debug("Multiple users detected: %s" % "; ".join([f"{u['last_name']}, {u['first_name']}" for u in users]))
+            self.logger.debug("Multiple users detected: %s", "; ".join([f"{u['last_name']}, {u['first_name']}" for u in users]))
             from_v = fromV
             # There exists cases that there is no modification in the diff, so no users
             # For example, (fromV, fromV + 1) no modification, but (fromV, fromV + 2) has modification
@@ -914,7 +914,7 @@ class OverleafProject:
     def new_remote_overleaf_rev(self) -> bool:
         local_overleaf_version = self.git_broker.local_overleaf_version
         remote_overleaf_version = self.overleaf_broker.remote_overleaf_version
-        self.logger.info("Fetched remote/local overleaf update: %d/%d", remote_overleaf_version, local_overleaf_version)
+        self.logger.info("Overleaf remote/local version: %d/%d", remote_overleaf_version, local_overleaf_version)
         assert remote_overleaf_version >= local_overleaf_version
         return remote_overleaf_version > local_overleaf_version
 
