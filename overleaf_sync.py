@@ -1031,7 +1031,6 @@ class OverleafProject:
         # Perform stash before pulling to prevent uncommitted changes in working branch
         # Reuse `stash` to check if there are stashed changes
         stash = self._pull_push_stash(stash)
-        self.logger.info("Pulling changes from Overleaf...")
         if new_remote_overleaf_rev:
             self._pull(dry_run=dry_run)
         if prune:
