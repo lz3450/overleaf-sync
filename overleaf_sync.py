@@ -827,7 +827,10 @@ class OverleafProject:
             ts = update["meta"]["end_ts"] // 1000
             self._migrate(fromV, toV, ts, users[0])
         else:
-            self.logger.debug("Multiple users detected: %s", "; ".join([f"{u['last_name']}, {u['first_name']}" for u in users]))
+            self.logger.debug(
+                "Multiple users detected: %s",
+                "; ".join([f"{u['last_name']}, {u['first_name']}" for u in users]),
+            )
             from_v = fromV
             ts = update["meta"]["end_ts"]
             current_user: dict | None = None
@@ -857,8 +860,6 @@ class OverleafProject:
                     raise ValueError("Too many users (%d) in the update", len(users))
             else:
                 self._migrate(from_v, toV, ts, current_user)
-
-
 
             # There exists cases that there is no modification in the diff, so no users
             # For example, (fromV, fromV + 1) no modification, but (fromV, fromV + 2) has modification
