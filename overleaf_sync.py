@@ -974,7 +974,10 @@ class OverleafProject:
                 self.git_broker.stash_pop_working()
 
     def _pull(self, dry_run: bool) -> None:
-        """Perform pull operation"""
+        """
+        Pull the latest changes from Overleaf and apply them to the working branch.
+        """
+        self.logger.info("Pulling changes from Overleaf...")
         # Get all new overleaf updates
         local_overleaf_version = self.git_broker.local_overleaf_version
         upcoming_overleaf_versions = list(
@@ -999,6 +1002,10 @@ class OverleafProject:
         self.logger.debug("Current branch (after `pull`): %s", self.git_broker.current_branch)
 
     def _pull_prune(self, dry_run: bool) -> None:
+        """
+        Prune local folders that are not present in the remote Overleaf project.
+        """
+        self.logger.info("Pruning local folders not present in Overleaf...")
         remote_overleaf_folders = self.overleaf_broker.indexed_ids["folders"].keys()
         for folder in (_ for _ in Path(self.working_dir).iterdir() if _.is_dir()):
             if (
@@ -1037,6 +1044,7 @@ class OverleafProject:
             return ErrorNumber.PULL_ERROR
         self._pull_push_stash_pop(stash)
 
+        self.logger.info("Successfully pulled changes from Overleaf")
         return ErrorNumber.OK
 
     @property
@@ -1067,6 +1075,7 @@ class OverleafProject:
 
     def _push(self, dry_run: bool) -> None:
         """Perform push operation"""
+        self.logger.info("Pushing changes to Overleaf...")
         self.git_broker.switch_to_working_branch()
         delete_list: list[str] = []
         upload_list: list[str] = []
@@ -1103,6 +1112,8 @@ class OverleafProject:
         self.overleaf_broker.refresh_indexed_file_ids()
 
     def _push_prune(self, dry_run: bool) -> None:
+        """Prune empty folders from Overleaf"""
+        self.logger.info("Pruning empty folders from Overleaf...")
         for pathname in self.empty_folders:
             self.overleaf_broker.delete(pathname, dry_run)
 
@@ -1113,7 +1124,6 @@ class OverleafProject:
             return ErrorNumber.NOT_INITIALIZED_ERROR
 
         if prune:
-            self.logger.info("Pruning empty folders from overleaf...")
             self._push_prune(dry_run)
             return ErrorNumber.OK
 
@@ -1142,6 +1152,7 @@ class OverleafProject:
         self.git_broker.rebase_working_branch()
         self._pull_push_stash_pop(stash)
 
+        self.logger.info("Successfully pushed changes to Overleaf")
         return ErrorNumber.OK
 
     def sync(self, prune=False, dry_run=False) -> ErrorNumber:
@@ -1149,6 +1160,7 @@ class OverleafProject:
             return result
         if (result := self.push(prune=prune, dry_run=dry_run)) != ErrorNumber.OK:
             return result
+        self.logger.info("Successfully completed sync")
         return ErrorNumber.OK
 
 
