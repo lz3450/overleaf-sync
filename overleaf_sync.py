@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import sys
 import os
 import shutil
 import subprocess
@@ -1192,12 +1193,12 @@ if __name__ == "__main__":
 
     match args.command:
         case "init":
-            exit(project.init(username=args.username, password=args.password, project_id=args.project_id))
+            sys.exit(project.init(username=args.username, password=args.password, project_id=args.project_id))
         case "pull":
-            exit(project.pull(stash=(not args.no_stash), prune=args.prune, dry_run=args.dry_run))
+            sys.exit(project.pull(stash=(not args.no_stash), prune=args.prune, dry_run=args.dry_run))
         case "push":
-            exit(project.push(prune=args.prune, dry_run=args.dry_run))
+            sys.exit(project.push(prune=args.prune, dry_run=args.dry_run))
         case "sync":
-            exit(project.sync(prune=args.prune, dry_run=args.dry_run))
+            sys.exit(project.sync(prune=args.prune, dry_run=args.dry_run))
         case _:
             parser.print_help()
