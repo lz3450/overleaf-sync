@@ -1082,7 +1082,7 @@ class OverleafProject:
         for line in self.git_broker.working_branch_status:
             self.logger.info("status: %s", line)
             columns = line.split("\t")
-            status = columns[0]
+            status = columns[0][0]
             match status:
                 case "M" | "A":
                     assert len(columns) == 2
@@ -1092,7 +1092,7 @@ class OverleafProject:
                     assert len(columns) == 2
                     pathname = columns[1]
                     delete_list.append(pathname)
-                case "R100":
+                case "R":
                     assert len(columns) == 3
                     old_pathname, new_pathname = columns[1], columns[2]
                     delete_list.append(old_pathname)
