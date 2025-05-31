@@ -1159,7 +1159,7 @@ class OverleafProject:
             return result
         if (result := self.push(prune=prune, dry_run=dry_run)) != ErrorNumber.OK:
             return result
-        self.logger.info("Successfully completed sync")
+        self.logger.info("Successfully sync changes between Overleaf project and local git repo")
         return ErrorNumber.OK
 
 
