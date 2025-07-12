@@ -828,7 +828,7 @@ class OverleafProject:
         else:
             self.logger.debug(
                 "Multiple users detected: %s",
-                "; ".join([f"{u['last_name']}, {u['first_name']}" for u in users]),
+                "; ".join([f"{u.get('last_name', '')}, {u.get('first_name', '')}" for u in users]),
             )
             from_v = fromV
             ts = update["meta"]["end_ts"]

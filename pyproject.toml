@@ -1,6 +1,6 @@
 [project]
 name = "overleaf-sync"
-version = "2.4"
+version = "2.5"
 description = "A tool for synchronizing files with Overleaf"
 authors = [
     { name = "Zelun Kong", email = "lz3450@outlook.com" }
