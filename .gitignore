@@ -1,5 +1,7 @@
 __pycache__
-test
+/test
+/build
+/*.egg-info
 
 *.ipynb
 *.json

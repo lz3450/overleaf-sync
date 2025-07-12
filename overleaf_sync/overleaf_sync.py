@@ -1,5 +1,3 @@
-#!/opt/bin/python3
-
 ################################################################
 ### Name: overleaf-sync.py
 ### Description: Overleaf Project Sync Tool
@@ -1162,8 +1160,7 @@ class OverleafProject:
         self.logger.info("Successfully sync changes between Overleaf project and local git repo")
         return ErrorNumber.OK
 
-
-if __name__ == "__main__":
+def main() -> None:
     parser = argparse.ArgumentParser(prog="overleaf-sync.py", description="Overleaf Project Sync Tool")
     parser.add_argument("-v", "--version", action="version", version="%(prog)s 1.0")
     parser.add_argument("-L", "--log", action="store_true", help="Log to file")
@@ -1213,3 +1210,6 @@ if __name__ == "__main__":
             sys.exit(project.sync(prune=args.prune, dry_run=args.dry_run))
         case _:
             parser.print_help()
+
+if __name__ == "__main__":
+    main()
