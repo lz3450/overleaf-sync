@@ -3,6 +3,4 @@ __pycache__
 /build
 /*.egg-info
 
-*.ipynb
-*.json
 !config.example.json
