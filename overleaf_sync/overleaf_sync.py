@@ -909,17 +909,7 @@ class OverleafProject:
         self.git_broker.switch_to_working_branch(force=True)
 
     def init(self, username: str, password: str, project_id: str) -> ErrorNumber:
-        self.logger.info("Initializing working directory...")
-        # Check if the working directory is empty except for the overleaf-sync directory
-        entries = os.listdir(self.working_dir)
-        if entries:
-            self.logger.error(
-                "Working directory `%s` is not empty. Please clean up the directory first",
-                os.path.realpath(self.working_dir),
-            )
-            return ErrorNumber.WORKING_TREE_DIRTY_ERROR
-        # Create overleaf-sync directory
-        os.makedirs(self.overleaf_sync_dir, exist_ok=False)
+        self.logger.info("Initializing overleaf project directory...")
         # Write `config.json`
         assert not os.path.exists(self.config_file)
         self.logger.info("Saving config file to %s", self.config_file)
@@ -1156,6 +1146,7 @@ class OverleafProject:
         self.logger.info("Successfully sync changes between Overleaf project and local git repo")
         return ErrorNumber.OK
 
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="overleaf-sync.py", description="Overleaf Project Sync Tool")
     parser.add_argument("-v", "--version", action="version", version="%(prog)s 1.0")
@@ -1185,18 +1176,24 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    # setup_logger(logging.getLogger(GitBroker.__qualname__), args.debug, args.log)
-    # setup_logger(logging.getLogger(OverleafBroker.__qualname__), args.debug, args.log)
-    # setup_logger(logging.getLogger(OverleafProject.__qualname__), args.debug, args.log)
-
-    setup_logger(logging.getLogger(GitBroker.__qualname__), args.debug)
-    setup_logger(logging.getLogger(OverleafBroker.__qualname__), args.debug)
-    setup_logger(logging.getLogger(OverleafProject.__qualname__), args.debug)
-
     project = OverleafProject()
 
     match args.command:
         case "init":
+            # Check if the working directory is empty except for the overleaf-sync directory
+            if os.listdir(project.working_dir):
+                print(
+                    f"Working directory {os.path.realpath(project.working_dir)} is not empty. Please clean up the directory first."
+                )
+                sys.exit(ErrorNumber.WORKING_TREE_DIRTY_ERROR)
+
+            # setup_logger(logging.getLogger(GitBroker.__qualname__), args.debug, args.log)
+            # setup_logger(logging.getLogger(OverleafBroker.__qualname__), args.debug, args.log)
+            # setup_logger(logging.getLogger(OverleafProject.__qualname__), args.debug, args.log)
+            setup_logger(logging.getLogger(GitBroker.__qualname__), args.debug)
+            setup_logger(logging.getLogger(OverleafBroker.__qualname__), args.debug)
+            setup_logger(logging.getLogger(OverleafProject.__qualname__), args.debug)
+
             sys.exit(project.init(username=args.username, password=args.password, project_id=args.project_id))
         case "pull":
             sys.exit(project.pull(stash=(not args.no_stash), prune=args.prune, dry_run=args.dry_run))
@@ -1206,6 +1203,7 @@ def main() -> None:
             sys.exit(project.sync(prune=args.prune, dry_run=args.dry_run))
         case _:
             parser.print_help()
+
 
 if __name__ == "__main__":
     main()
