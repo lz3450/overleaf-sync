@@ -89,7 +89,7 @@ class GitBroker:
         except subprocess.CalledProcessError as e:
             self.logger.error("Git command failed: %s\noutput:\n%s\n---", e, e.output)
             traceback.print_stack()
-            exit(ErrorNumber.GIT_ERROR)
+            sys.exit(ErrorNumber.GIT_ERROR)
         self.logger.debug("Git output: \n%s", output)
         return output
 
@@ -100,7 +100,7 @@ class GitBroker:
                 shutil.rmtree(os.path.join(self.working_dir, ".git"))
             else:
                 self.logger.error("Git repository already exists in %s. Exiting...", self.working_dir)
-                exit(ErrorNumber.REINITIALIZATION_ERROR)
+                sys.exit(ErrorNumber.REINITIALIZATION_ERROR)
         self("init", "-b", self.overleaf_branch)
 
     def sanity_check(self) -> None:
@@ -110,7 +110,7 @@ class GitBroker:
                 "Git is not initialized for LaTeX project in directory `%s`. Please reinitialize the project",
                 self.working_dir,
             )
-            exit(ErrorNumber.GIT_DIR_CORRUPTED_ERROR)
+            sys.exit(ErrorNumber.GIT_DIR_CORRUPTED_ERROR)
         # Check if both overleaf branch and working branch exist
         branches = [_.lstrip("*").strip() for _ in self("branch", "--list").splitlines()]
         if not (self.overleaf_branch in branches and self.working_branch in branches):
@@ -119,7 +119,7 @@ class GitBroker:
                 self.overleaf_branch,
                 self.working_branch,
             )
-            exit(ErrorNumber.WKDIR_CORRUPTED_ERROR)
+            sys.exit(ErrorNumber.WKDIR_CORRUPTED_ERROR)
 
     @property
     def managed_files(self) -> list[str]:
@@ -478,7 +478,7 @@ class OverleafBroker:
                 assert isinstance(data, str)
             except websocket.WebSocketConnectionClosedException:
                 self.logger.critical("WebSocket connection closed")
-                exit(ErrorNumber.HTTP_ERROR)
+                sys.exit(ErrorNumber.HTTP_ERROR)
             else:
                 if data.startswith("5:::"):
                     data_json = json.loads(data[4:])
@@ -722,7 +722,7 @@ class OverleafProject:
         except requests.HTTPError as e:
             self.logger.critical("Failed to download update %d:\n%s", to_v, e)
             self.logger.critical("Please remove the working directory and try again later. Exiting...")
-            exit(ErrorNumber.HTTP_ERROR)
+            sys.exit(ErrorNumber.HTTP_ERROR)
         self.overleaf_broker.unzip()
 
     def _apply_changes_diff(self, from_v: int, to_v: int, filetree_diff_entries: list[dict]) -> None:
@@ -912,21 +912,17 @@ class OverleafProject:
         self.logger.info("Initializing working directory...")
         # Check if the working directory is empty except for the overleaf-sync directory
         entries = os.listdir(self.working_dir)
-        entries.remove(OVERLEAF_SYNC_DIR_NAME)
         if entries:
             self.logger.error(
                 "Working directory `%s` is not empty. Please clean up the directory first",
                 os.path.realpath(self.working_dir),
             )
-            shutil.rmtree(self.overleaf_sync_dir)
-            exit(ErrorNumber.WORKING_TREE_DIRTY_ERROR)
+            return ErrorNumber.WORKING_TREE_DIRTY_ERROR
         # Create overleaf-sync directory
-        os.makedirs(self.overleaf_sync_dir, exist_ok=True)
+        os.makedirs(self.overleaf_sync_dir, exist_ok=False)
         # Write `config.json`
-        if os.path.exists(self.config_file):
-            self.logger.warning("Overwriting config file `%s`...", self.config_file)
-        else:
-            self.logger.info("Saving config file to %s", self.config_file)
+        assert not os.path.exists(self.config_file)
+        self.logger.info("Saving config file to %s", self.config_file)
         with open(self.config_file, "w") as f:
             json.dump({"username": username, "password": password, "project_id": project_id}, f)
         # Write `.gitignore`
@@ -938,7 +934,7 @@ class OverleafProject:
         self.overleaf_broker.login(username, password, project_id)
         # Migrate overleaf updates to git repo
         self._git_repo_init()
-
+        self.logger.info("Successfully initialized overleaf project directory")
         return ErrorNumber.OK
 
     @property
@@ -960,7 +956,7 @@ class OverleafProject:
             self.logger.error(
                 "Working tree is dirty. Pull/Push stopped. Either run with `--no-stash` or commit changes first"
             )
-            exit(ErrorNumber.WORKING_TREE_DIRTY_ERROR)
+            sys.exit(ErrorNumber.WORKING_TREE_DIRTY_ERROR)
         return stash
 
     def _pull_push_stash_pop(self, stash: bool) -> None:
