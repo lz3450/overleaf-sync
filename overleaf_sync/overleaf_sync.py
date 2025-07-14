@@ -348,9 +348,9 @@ class OverleafBroker:
 
         def _sleep_until(ts: float) -> None:
             now = time()
-            time_to_sleep = ts - now if ts > now else 0
-            self.logger.debug("Sleeping for %.3f seconds...", time_to_sleep)
-            sleep(time_to_sleep)
+            if (time_to_sleep := ts - now) > 0:
+                self.logger.debug("Sleeping for %.3f seconds...", time_to_sleep)
+                sleep(time_to_sleep)
 
         url = f"{self.project_url}/version/{update}/zip" if update else f"{self.project_url}/download/zip"
         self.logger.debug("Downloading project ZIP from url: %s...", url)
