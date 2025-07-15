@@ -38,26 +38,6 @@ LOG_DATEFMT = "%Y-%m-%d %H:%M:%S"
 LOG_DIR = os.path.join(OVERLEAF_SYNC_DIR_NAME, "logs")
 
 
-def setup_logger(logger: logging.Logger, debug: bool, log_file: bool = True) -> None:
-    logger.setLevel(logging.DEBUG)
-    ch = logging.StreamHandler()
-    ch.setLevel(logging.DEBUG if debug else logging.INFO)
-    ch.setFormatter(logging.Formatter(LOG_FORMAT, datefmt=LOG_DATEFMT))
-    logger.addHandler(ch)
-
-    if not log_file:
-        return
-
-    os.makedirs(LOG_DIR, exist_ok=True)
-    with open(os.path.join(LOG_DIR, ".gitignore"), "w") as f:
-        f.write("*")
-    now = datetime.now().strftime("%Y%m%d_%H%M%S")
-    fh = logging.FileHandler(os.path.join(LOG_DIR, f"{now}.log"))
-    fh.setLevel(logging.DEBUG)
-    fh.setFormatter(logging.Formatter(LOG_FORMAT, datefmt=LOG_DATEFMT))
-    logger.addHandler(fh)
-
-
 @unique
 class ErrorNumber(IntEnum):
     OK = 0
@@ -672,15 +652,17 @@ class OverleafProject:
         self.config_file = os.path.join(self.overleaf_sync_dir, "config.json")
         self._initialized = False
 
+        if not os.path.exists(self.config_file):
+            return
+
         # Initialize git broker
         self.git_broker = GitBroker(self.working_dir)
         # Initialize overleaf broker
         self.overleaf_broker = OverleafBroker(self.working_dir, self.overleaf_sync_dir)
-        if not os.path.exists(self.config_file):
-            return
 
         self.sanity_check()
         self._initialized = True
+
         with open(self.config_file, "r") as f:
             config: dict[str, str] = json.load(f)
         self.overleaf_broker.login(config["username"], config["password"], config["project_id"])
@@ -909,9 +891,15 @@ class OverleafProject:
         self.git_broker.switch_to_working_branch(force=True)
 
     def init(self, username: str, password: str, project_id: str) -> ErrorNumber:
-        self.logger.info("Initializing overleaf project directory...")
+        # Check if the working directory is empty except for the overleaf-sync directory
+        if self.initialized:
+            self.logger.error("Project already initialized.")
+            return ErrorNumber.WORKING_TREE_DIRTY_ERROR
         # Write `config.json`
-        assert not os.path.exists(self.config_file)
+        if os.path.exists(self.config_file):
+            self.logger.error(f"Config file {self.config_file} already exists. Please remove it first.")
+            return ErrorNumber.WORKING_TREE_DIRTY_ERROR
+        self.logger.info("Initializing overleaf project directory...")
         self.logger.info("Saving config file to %s", self.config_file)
         with open(self.config_file, "w") as f:
             json.dump({"username": username, "password": password, "project_id": project_id}, f)
@@ -1147,6 +1135,26 @@ class OverleafProject:
         return ErrorNumber.OK
 
 
+def setup_logger(logger: logging.Logger, debug: bool, log_file: bool = True) -> None:
+    logger.setLevel(logging.DEBUG)
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.DEBUG if debug else logging.INFO)
+    ch.setFormatter(logging.Formatter(LOG_FORMAT, datefmt=LOG_DATEFMT))
+    logger.addHandler(ch)
+
+    if not log_file:
+        return
+
+    os.makedirs(LOG_DIR, exist_ok=True)
+    with open(os.path.join(LOG_DIR, ".gitignore"), "w") as f:
+        f.write("*")
+    now = datetime.now().strftime("%Y%m%d_%H%M%S")
+    fh = logging.FileHandler(os.path.join(LOG_DIR, f"{now}.log"))
+    fh.setLevel(logging.DEBUG)
+    fh.setFormatter(logging.Formatter(LOG_FORMAT, datefmt=LOG_DATEFMT))
+    logger.addHandler(fh)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="overleaf-sync.py", description="Overleaf Project Sync Tool")
     parser.add_argument("-v", "--version", action="version", version="%(prog)s 1.0")
@@ -1176,24 +1184,17 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    # setup_logger(OverleafProject.logger, args.debug, args.log)
+    # setup_logger(GitBroker.logger, args.debug, args.log)
+    # setup_logger(OverleafBroker.logger, args.debug, args.log)
+    setup_logger(OverleafProject.logger, args.debug)
+    setup_logger(GitBroker.logger, args.debug)
+    setup_logger(OverleafBroker.logger, args.debug)
+
     project = OverleafProject()
 
     match args.command:
         case "init":
-            # Check if the working directory is empty except for the overleaf-sync directory
-            if os.listdir(project.working_dir):
-                print(
-                    f"Working directory {os.path.realpath(project.working_dir)} is not empty. Please clean up the directory first."
-                )
-                sys.exit(ErrorNumber.WORKING_TREE_DIRTY_ERROR)
-
-            # setup_logger(logging.getLogger(GitBroker.__qualname__), args.debug, args.log)
-            # setup_logger(logging.getLogger(OverleafBroker.__qualname__), args.debug, args.log)
-            # setup_logger(logging.getLogger(OverleafProject.__qualname__), args.debug, args.log)
-            setup_logger(logging.getLogger(GitBroker.__qualname__), args.debug)
-            setup_logger(logging.getLogger(OverleafBroker.__qualname__), args.debug)
-            setup_logger(logging.getLogger(OverleafProject.__qualname__), args.debug)
-
             sys.exit(project.init(username=args.username, password=args.password, project_id=args.project_id))
         case "pull":
             sys.exit(project.pull(stash=(not args.no_stash), prune=args.prune, dry_run=args.dry_run))
