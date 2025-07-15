@@ -76,7 +76,7 @@ class GitBroker:
     def init(self, force=False) -> None:
         if os.path.exists(os.path.join(self.working_dir, ".git")):
             if force:
-                self.logger.warning("Reinitializing git repository in %s...", self.working_dir)
+                self.logger.warning("Reinitializing git repository in %s ...", self.working_dir)
                 shutil.rmtree(os.path.join(self.working_dir, ".git"))
             else:
                 self.logger.error("Git repository already exists in %s. Exiting...", self.working_dir)
@@ -285,7 +285,7 @@ class OverleafBroker:
         headers = {
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
         }
-        self.logger.debug("Fetching project updates from %s...", url)
+        self.logger.debug("Fetching project updates from %s ...", url)
         response = self._get(url, headers=headers)
         response_json: dict = response.json()
         return response_json["updates"], response_json.get("nextBeforeTimestamp", 0)
@@ -333,7 +333,7 @@ class OverleafBroker:
                 sleep(time_to_sleep)
 
         url = f"{self.project_url}/version/{update}/zip" if update else f"{self.project_url}/download/zip"
-        self.logger.debug("Downloading project ZIP from url: %s...", url)
+        self.logger.debug("Downloading project ZIP from %s ...", url)
         _sleep_until(self._download_zip_ts + 120)
         response = self._get(url)
         self._download_zip_ts = time()
@@ -346,12 +346,12 @@ class OverleafBroker:
         Unzip the downloaded ZIP file to the LaTeX project directory.
         `file_list`: List of files to extract. If `None`, extract all files.
         """
-        self.logger.debug("Unzipping file %s to directory %s...", self.overleaf_zip, self.working_dir)
+        self.logger.debug("Unzipping file %s to directory %s ...", self.overleaf_zip, self.working_dir)
         with zipfile.ZipFile(self.overleaf_zip, "r") as zip_ref:
             if file_list:
                 # TODO: not tested
                 for file in zip_ref.filelist:
-                    self.logger.debug("Extracting %s...", file)
+                    self.logger.debug("Extracting %s ...", file)
                     zip_ref.extract(file, self.working_dir)
             else:
                 zip_ref.extractall(self.working_dir)
@@ -390,7 +390,7 @@ class OverleafBroker:
         return response.json()["diff"]
 
     def find_id_type(self, pathname: str) -> tuple[str, str] | tuple[None, None]:
-        self.logger.debug("Finding id for `%s`...", pathname)
+        self.logger.debug("Finding id for `%s` ...", pathname)
 
         if pathname == "":
             return self.root_folder_id, "folder"
@@ -408,7 +408,7 @@ class OverleafBroker:
         return id, type
 
     def download_file(self, id: str, pathname: str) -> bool:
-        self.logger.debug("Downloading file %s...", pathname)
+        self.logger.debug("Downloading file %s ...", pathname)
         url = f"{PROJECTS_URL}/{self.project_id}/file/{id}"
         headers = {
             "Accept": "*/*",
@@ -423,11 +423,11 @@ class OverleafBroker:
             os.makedirs(dirname, exist_ok=True)
         with open(os.path.join(self.working_dir, pathname), "wb") as f:
             f.write(response.content)
-        self.logger.debug("Succeed to download file %s...", pathname)
+        self.logger.debug("Succeed to download file %s ...", pathname)
         return True
 
     def download_doc_file(self, id: str, pathname: str) -> bool:
-        self.logger.debug("Downloading doc file %s...", pathname)
+        self.logger.debug("Downloading doc file %s ...", pathname)
         url = f"{PROJECTS_URL}/{self.project_id}/doc/{id}/download"
         headers = {
             "Accept": "*/*",
@@ -442,11 +442,11 @@ class OverleafBroker:
             os.makedirs(dirname, exist_ok=True)
         with open(os.path.join(self.working_dir, pathname), "wb") as f:
             f.write(response.content)
-        self.logger.debug("Succeed to download doc file %s...", pathname)
+        self.logger.debug("Succeed to download doc file %s ...", pathname)
         return True
 
     def _get_root_folder_json(self) -> dict:
-        self.logger.debug("Fetching pathname IDs from Overleaf project %s...", self.project_id)
+        self.logger.debug("Fetching pathname IDs from Overleaf project %s ...", self.project_id)
         response = self._get(f"{OVERLEAF_URL}/socket.io/1/?projectId={self.project_id}")
         ws_id = response.text.split(":")[0]
         ws = websocket.create_connection(
@@ -562,7 +562,7 @@ class OverleafBroker:
         self._indexed_file_ids = None
 
     def create_folder(self, pathname: str, dry_run=False) -> str:
-        self.logger.info("Creating folder %s...", pathname)
+        self.logger.info("Creating folder %s ...", pathname)
 
         if pathname == "":
             return self.root_folder_id
