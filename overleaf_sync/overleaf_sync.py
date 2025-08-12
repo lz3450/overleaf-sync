@@ -44,12 +44,13 @@ class ErrorNumber(IntEnum):
     NOT_INITIALIZED_ERROR = 1
     WKDIR_CORRUPTED_ERROR = 2
     GIT_DIR_CORRUPTED_ERROR = 3
-    HTTP_ERROR = 4
-    GIT_ERROR = 5
-    PULL_ERROR = 6
-    PUSH_ERROR = 7
-    WORKING_TREE_DIRTY_ERROR = 8
-    REINITIALIZATION_ERROR = 9
+    GIT_REBASE_CONFLICT_ERROR = 4
+    HTTP_ERROR = 5
+    GIT_ERROR = 6
+    PULL_ERROR = 7
+    PUSH_ERROR = 8
+    WORKING_TREE_DIRTY_ERROR = 9
+    REINITIALIZATION_ERROR = 10
 
 
 class GitBroker:
@@ -163,7 +164,7 @@ class GitBroker:
     def tag_working_branch(self, tag: str) -> None:
         self("tag", tag, self.working_branch)
 
-    def rebase_working_branch(self) -> bool:
+    def rebase_working_branch(self) -> ErrorNumber:
         """Rebase working branch to overleaf branch"""
         result = self("rebase", self.overleaf_branch, self.working_branch, check=False)
         self._update_working_branch_start_commit()
@@ -174,8 +175,8 @@ class GitBroker:
                 self.overleaf_branch,
                 result,
             )
-            return False
-        return True
+            return ErrorNumber.GIT_REBASE_CONFLICT_ERROR
+        return ErrorNumber.OK
 
     @property
     def is_there_unmerged_overleaf_rev(self) -> bool:
@@ -881,7 +882,7 @@ class OverleafProject:
                 self._migrate_update(update)
 
     @property
-    def new_working_commit_exists(self) -> bool:
+    def new_working_commit_exist(self) -> bool:
         return self.git_broker.current_working_commit != self.git_broker.starting_working_commit
 
     def _git_repo_init(self) -> None:
@@ -916,7 +917,7 @@ class OverleafProject:
         return ErrorNumber.OK
 
     @property
-    def new_remote_overleaf_rev(self) -> bool:
+    def new_remote_overleaf_rev_exist(self) -> bool:
         local_overleaf_version = self.git_broker.local_overleaf_version
         remote_overleaf_version = self.overleaf_broker.remote_overleaf_version
         self.logger.info("Overleaf remote/local version: %d/%d", remote_overleaf_version, local_overleaf_version)
@@ -995,24 +996,26 @@ class OverleafProject:
             shutil.rmtree(self.overleaf_sync_dir)
             return ErrorNumber.NOT_INITIALIZED_ERROR
 
-        new_remote_overleaf_rev = self.new_remote_overleaf_rev
-        if not new_remote_overleaf_rev and not prune:
+        if prune:
+            self._pull_prune(dry_run)
+            return ErrorNumber.OK
+
+        if not self.new_remote_overleaf_rev_exist:
             self.logger.info("No new changes to pull")
             return ErrorNumber.OK
 
         # Perform stash before pulling to prevent uncommitted changes in working branch
         # Reuse `stash` to check if there are stashed changes
         stash = self._pull_push_stash(stash)
-        if new_remote_overleaf_rev:
+        if self.new_remote_overleaf_rev_exist:
             self._pull(dry_run=dry_run)
-        if prune:
-            self._pull_prune(dry_run=dry_run)
+        # Rebase working branch onto overleaf branch
         self.logger.debug("Rebasing working branch after pulling...")
-        if self.git_broker.rebase_working_branch():
-            self.logger.debug("Switching back to working branch without rebasing after pulling...")
-            self.git_broker.switch_to_working_branch()
-        else:
-            return ErrorNumber.PULL_ERROR
+        if self.git_broker.rebase_working_branch() != ErrorNumber.OK:
+            return ErrorNumber.GIT_REBASE_CONFLICT_ERROR
+
+        self.logger.debug("Switching back to working branch without rebasing after pulling...")
+        self.git_broker.switch_to_working_branch()
         self._pull_push_stash_pop(stash)
 
         self.logger.info("Successfully pulled changes from Overleaf")
@@ -1096,31 +1099,37 @@ class OverleafProject:
 
         if prune:
             self._push_prune(dry_run)
+            self._pull_prune(dry_run=dry_run)
             return ErrorNumber.OK
 
         # Check if there are new changes to push
-        if not self.new_working_commit_exists and not prune:
+        if not self.new_working_commit_exist:
             self.logger.info("No new changes to push")
             return ErrorNumber.OK
 
         # Check if there are new changes in remote overleaf
-        if self.new_remote_overleaf_rev:
+        if self.new_remote_overleaf_rev_exist:
             self.logger.error("There are new remote overleaf updates. Please pull first")
             return ErrorNumber.PUSH_ERROR
 
         # Perform stash before pushing to prevent uncommitted changes in working branch
         # Reuse `stash` to check if there are stashed changes
         stash = self._pull_push_stash()
-        if self.new_working_commit_exists:
+        if self.new_working_commit_exist:
             self._push(dry_run=dry_run)
             self._pull(dry_run=dry_run)
-        if prune:
-            self._push_prune(dry_run=dry_run)
-            self._pull_prune(dry_run=dry_run)
+
+        # Validation
         if not self.git_broker.is_identical_working_overleaf:
-            self.logger.warning("Working branch is not identical to overleaf branch")
+            self.logger.error("Working branch is not identical to overleaf branch")
+            return ErrorNumber.PUSH_ERROR
         self.git_broker.tag_working_branch(str(self.git_broker.local_overleaf_version))
-        self.git_broker.rebase_working_branch()
+
+        # Rebase working branch onto overleaf branch
+        self.logger.debug("Rebasing working branch after pushing...")
+        if self.git_broker.rebase_working_branch() != ErrorNumber.OK:
+            return ErrorNumber.GIT_REBASE_CONFLICT_ERROR
+
         self._pull_push_stash_pop(stash)
 
         self.logger.info("Successfully pushed changes to Overleaf")
