@@ -1005,19 +1005,20 @@ class OverleafProject:
             self.logger.info("No new changes to pull")
             return ErrorNumber.OK
 
-        # Perform stash before pulling to prevent uncommitted changes in working branch
-        # Reuse `stash` to check if there are stashed changes
+        ### Perform pull
         stash = self._pull_push_stash(stash)
-        if self.new_remote_overleaf_rev_exist:
-            self._pull(dry_run=dry_run)
-        # Rebase working branch onto overleaf branch
+
+        self._pull(dry_run=dry_run)
+
         self.logger.debug("Rebasing working branch after pulling...")
         if self.git_broker.rebase_working_branch() != ErrorNumber.OK:
             return ErrorNumber.GIT_REBASE_CONFLICT_ERROR
 
         self.logger.debug("Switching back to working branch without rebasing after pulling...")
         self.git_broker.switch_to_working_branch()
+
         self._pull_push_stash_pop(stash)
+        ### End pull
 
         self.logger.info("Successfully pulled changes from Overleaf")
         return ErrorNumber.OK
