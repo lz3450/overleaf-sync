@@ -2,10 +2,12 @@
 ### Name: overleaf-sync.py
 ### Description: Overleaf Project Sync Tool
 ### Author: KZL
-### Version: 3.2
+### Version: 4.0
 ################################################################
 
 from __future__ import annotations
+
+from . import __version__
 
 import sys
 import os
@@ -1174,7 +1176,7 @@ def setup_logger(logger: logging.Logger, debug: bool, log_file: bool = True) -> 
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="overleaf-sync.py", description="Overleaf Project Sync Tool")
-    parser.add_argument("-v", "--version", action="version", version="%(prog)s 1.0")
+    parser.add_argument("-v", "--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("-L", "--log", action="store_true", help="Log to file")
     parser.add_argument("-D", "--debug", action="store_true", help="Debug mode")
     subparsers = parser.add_subparsers(dest="command", help="Command to execute")
