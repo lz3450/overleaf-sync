@@ -397,23 +397,23 @@ class OverleafBroker:
         response = self._get(url, headers=headers)
         return response.json()["diff"]
 
-    def find_id_type(self, pathname: str) -> tuple[str, str] | tuple[None, None]:
+    def find_pathname_id_type(self, pathname: str) -> tuple[str | None, str | None]:
         self.logger.debug("Finding id for `%s` ...", pathname)
+        ids = self.indexed_ids
+        p_id: str | None = None
+        p_type: str | None = None
 
         if pathname == "":
-            return self.root_folder_id, "folder"
-
-        ids = self.indexed_ids
-        if pathname in ids["fileRefs"]:
-            id, type = ids["fileRefs"][pathname], "file"
+            p_id, p_type = self.root_folder_id, "folder"
+        elif pathname in ids["fileRefs"]:
+            p_id, p_type = ids["fileRefs"][pathname], "file"
         elif pathname in ids["docs"]:
-            id, type = ids["docs"][pathname], "doc"
+            p_id, p_type = ids["docs"][pathname], "doc"
         elif pathname in ids["folders"]:
-            id, type = ids["folders"][pathname], "folder"
-        else:
-            return (None, None)
-        self.logger.debug("Found file ID for `%s`: %s (%s)", pathname, id, type)
-        return id, type
+            p_id, p_type = ids["folders"][pathname], "folder"
+
+        self.logger.debug("Found ID of `%s`: %s (%s)", pathname, p_id, p_type)
+        return p_id, p_type
 
     def download_file(self, id: str, pathname: str) -> bool:
         self.logger.debug("Downloading file %s ...", pathname)
@@ -511,7 +511,7 @@ class OverleafBroker:
 
         folder_name = os.path.dirname(pathname)
         if folder_name != "":
-            folder_id, type = self.find_id_type(folder_name)
+            folder_id, type = self.find_pathname_id_type(folder_name)
             if folder_id is None:
                 folder_id = self.create_folder(folder_name)
             else:
@@ -577,7 +577,7 @@ class OverleafBroker:
 
         # Check if the parent folder exists
         dirname = os.path.dirname(pathname)
-        parent_folder_id, type = self.find_id_type(dirname)
+        parent_folder_id, type = self.find_pathname_id_type(dirname)
         if parent_folder_id is None:
             parent_folder_id = self.create_folder(dirname, dry_run=dry_run)
         else:
