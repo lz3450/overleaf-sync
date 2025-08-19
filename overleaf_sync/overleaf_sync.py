@@ -1114,12 +1114,17 @@ class OverleafProject:
             self.logger.error("There are new remote overleaf updates. Please pull first")
             return ErrorNumber.PUSH_ERROR
 
-        # Perform stash before pushing to prevent uncommitted changes in working branch
-        # Reuse `stash` to check if there are stashed changes
+        ### Perform push
         stash = self._pull_push_stash()
-        if self.new_working_commit_exist:
-            self._push(dry_run=dry_run)
-            self._pull(dry_run=dry_run)
+
+        self._push(dry_run=dry_run)
+        if not self.new_remote_overleaf_rev_exist:
+            self.logger.warning("The new working branch are already identical to the remote overleaf")
+            self.logger.warning("Make more commits before next push")
+            self._pull_push_stash_pop(stash)
+            return ErrorNumber.OK
+
+        self._pull(dry_run=dry_run)
 
         # Validation
         if not self.git_broker.is_identical_working_overleaf:
@@ -1127,12 +1132,12 @@ class OverleafProject:
             return ErrorNumber.PUSH_ERROR
         self.git_broker.tag_working_branch(str(self.git_broker.local_overleaf_version))
 
-        # Rebase working branch onto overleaf branch
         self.logger.debug("Rebasing working branch after pushing...")
         if self.git_broker.rebase_working_branch() != ErrorNumber.OK:
             return ErrorNumber.GIT_REBASE_CONFLICT_ERROR
 
         self._pull_push_stash_pop(stash)
+        ### End push
 
         self.logger.info("Successfully pushed changes to Overleaf")
         return ErrorNumber.OK
