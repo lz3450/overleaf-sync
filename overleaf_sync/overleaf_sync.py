@@ -2,6 +2,7 @@
 ### Name: overleaf-sync.py
 ### Description: Overleaf Project Sync Tool
 ### Author: KZL
+### Version: 3.2
 ################################################################
 
 from __future__ import annotations
