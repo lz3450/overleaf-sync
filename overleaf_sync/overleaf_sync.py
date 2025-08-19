@@ -254,8 +254,15 @@ class OverleafBroker:
     def _post(self, url: str, **kwargs) -> requests.Response:
         return self._request("POST", url, **kwargs)
 
-    def _delete(self, url: str, **kwargs) -> requests.Response:
-        return self._request("DELETE", url, **kwargs)
+    def _delete(self, p_id: str, p_type: str) -> None:
+        url = f"{self.project_url}/{p_type}/{p_id}"
+        headers = {
+            "Accept": "application/json",
+            "Origin": OVERLEAF_URL,
+            "Referer": self.project_url,
+            "X-CSRF-TOKEN": self.csrf_token,
+        }
+        self._request("DELETE", url, **headers)
 
     def login(self, username: str | None = None, password: str | None = None, project_id: str | None = None) -> None:
         if self._logged_in:
@@ -593,10 +600,13 @@ class OverleafBroker:
         return response_json["_id"]
 
     def delete(self, pathname: str, dry_run=False) -> None:
-        id, type = self.find_id_type(pathname)
-        self.logger.info("Deleting `%s`(%s): %s", pathname, type, id)
+        p_id, p_type = self.find_pathname_id_type(pathname)
+        if p_id is None or p_type is None:
+            self.logger.warning("Failed to find ID for \"%s\", skip deleting", pathname)
+            return
+        self.logger.info("Deleting %s \"%s\" (%s)", p_type, pathname, p_id)
 
-        if type == "folder" and input(
+        if p_type == "folder" and input(
             f"Are you sure you want to delete folder {pathname}? (y/n): "
         ).strip().lower() not in ["y", "yes"]:
             self.logger.info("Operation cancelled")
@@ -605,16 +615,7 @@ class OverleafBroker:
         if dry_run:
             return
 
-        url = f"{self.project_url}/{type}/{id}"
-        headers = {
-            "Accept": "application/json",
-            "Origin": OVERLEAF_URL,
-            "Referer": self.project_url,
-            "X-CSRF-TOKEN": self.csrf_token,
-        }
-        if type not in ["file", "doc", "folder"]:
-            raise ValueError(f"Invalid type: {type}")
-        self._delete(url, headers=headers)
+        self._delete(p_id, p_type)
 
     def set_label(self, version: int, label: str) -> None:
         self.logger.info("Labelling version %d as `%s`...", version, label)
