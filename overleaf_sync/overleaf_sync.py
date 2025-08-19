@@ -265,7 +265,7 @@ class OverleafBroker:
             "Referer": self.project_url,
             "X-CSRF-TOKEN": self.csrf_token,
         }
-        self._request("DELETE", url, **headers)
+        self._request("DELETE", url, headers=headers)
 
     def login(self, username: str | None = None, password: str | None = None, project_id: str | None = None) -> None:
         if self._logged_in:
