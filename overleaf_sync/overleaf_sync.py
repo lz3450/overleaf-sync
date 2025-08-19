@@ -272,7 +272,7 @@ class OverleafBroker:
         self.password = password
         self.project_id = project_id
 
-        self.logger.info("Logging in to Overleaf...")
+        self.logger.debug("Logging in to Overleaf...")
         response = self._session.get(LOGIN_URL)
         soup = BeautifulSoup(response.text, "html.parser")
         csrf_token: str
@@ -282,7 +282,7 @@ class OverleafBroker:
         payload = {"email": self.username, "password": self.password, "_csrf": csrf_token}
         response = self._session.post(LOGIN_URL, data=payload)
         self._logged_in = True
-        self.logger.info("Successfully logged in to Overleaf")
+        self.logger.debug("Successfully logged in to Overleaf")
 
     def _get_updates(self, before=0) -> tuple[list[dict], int]:
         url = (
