@@ -1,16 +1,25 @@
 {
     "version": "0.2",
     "ignorePaths": [
-        "install.sh",
+        "install.sh"
     ],
     "dictionaryDefinitions": [],
     "dictionaries": [],
     "words": [
         "apng",
+        "Edg",
+        "fh",
         "filetree",
+        "KHTML",
+        "levelname",
+        "msecs",
+        "ol",
         "qqfile",
         "Referer",
-        "WKDIR"
+        "WKDIR",
+        "ws",
+        "wss",
+        "zh"
     ],
     "ignoreWords": [],
     "import": []
