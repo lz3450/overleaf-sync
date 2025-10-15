@@ -36,7 +36,7 @@ PROJECTS_URL = f"{OVERLEAF_URL}/project"
 
 OVERLEAF_SYNC_DIR_NAME = ".overleaf-sync"
 
-LOG_FORMAT = "[%(asctime)s.%(msecs)03d] [%(name)s] [%(levelname)s] %(message)s"
+LOG_FORMAT = "[%(asctime)s.%(msecs)03d] [%(name)s] [%(funcName)s] [%(levelname)s] %(message)s"
 LOG_DATEFMT = "%Y-%m-%d %H:%M:%S"
 LOG_DIR = os.path.join(OVERLEAF_SYNC_DIR_NAME, "logs")
 
@@ -977,6 +977,7 @@ class OverleafProject:
         self.git_broker.switch_to_overleaf_branch()
         self._migrate_updates(upcoming_overleaf_versions, dry_run=dry_run)
         self.logger.debug("Current branch (after `pull`): %s", self.git_broker.current_branch)
+        self.logger.info("Completed pulling changes from Overleaf")
 
     def _pull_prune(self, dry_run: bool) -> None:
         """
@@ -993,6 +994,7 @@ class OverleafProject:
                 self.logger.info("Pruning local folder `%s`...", folder)
                 if not dry_run:
                     folder.rmdir()
+        self.logger.info("Completed pruning local folders not present in Overleaf")
 
     def pull(self, stash=True, prune=False, dry_run=False) -> ErrorNumber:
         if not self.initialized:
@@ -1089,6 +1091,7 @@ class OverleafProject:
         # The push verification may fail in this case
         self.overleaf_broker.refresh_updates()
         self.overleaf_broker.refresh_indexed_file_ids()
+        self.logger.info("Completed pushing changes to Overleaf")
 
     def _push_prune(self, dry_run: bool) -> None:
         """Prune empty folders from Overleaf"""
