@@ -1145,14 +1145,6 @@ class OverleafProject:
         self.logger.info("Successfully pushed changes to Overleaf")
         return ErrorNumber.OK
 
-    def sync(self, prune=False, dry_run=False) -> ErrorNumber:
-        if (result := self.pull(prune=prune, dry_run=dry_run)) != ErrorNumber.OK:
-            return result
-        if (result := self.push(prune=prune, dry_run=dry_run)) != ErrorNumber.OK:
-            return result
-        self.logger.info("Successfully sync changes between Overleaf project and local git repo")
-        return ErrorNumber.OK
-
 
 def setup_logger(logger: logging.Logger, debug: bool, log_file: bool = True) -> None:
     logger.setLevel(logging.DEBUG)
@@ -1197,10 +1189,6 @@ def main() -> None:
     push_parser.add_argument("-p", "--prune", action="store_true", help="Prune empty folders")
     push_parser.add_argument("-d", "--dry-run", action="store_true", help="Dry run mode")
 
-    sync_parser = subparsers.add_parser("sync", help="Sync changes between Overleaf project and local git repo")
-    sync_parser.add_argument("-p", "--prune", action="store_true", help="Prune empty folders")
-    sync_parser.add_argument("-d", "--dry-run", action="store_true", help="Dry run mode")
-
     args = parser.parse_args()
 
     # setup_logger(OverleafProject.logger, args.debug, args.log)
@@ -1219,8 +1207,6 @@ def main() -> None:
             sys.exit(project.pull(stash=(not args.no_stash), prune=args.prune, dry_run=args.dry_run))
         case "push":
             sys.exit(project.push(prune=args.prune, dry_run=args.dry_run))
-        case "sync":
-            sys.exit(project.sync(prune=args.prune, dry_run=args.dry_run))
         case _:
             parser.print_help()
 
