@@ -1132,10 +1132,6 @@ class OverleafProject:
 
         self._pull(dry_run=dry_run)
 
-        # Validation
-        if not self.git_broker.is_identical_working_overleaf:
-            self.logger.error("Working branch is not identical to overleaf branch")
-            return ErrorNumber.PUSH_ERROR
         self.git_broker.tag_working_branch(str(self.git_broker.local_overleaf_version))
 
         self.logger.debug("Rebasing working branch after pushing...")
@@ -1145,6 +1141,10 @@ class OverleafProject:
         self._pull_push_stash_pop(stash)
         ### End push
 
+        # Validation
+        if not self.git_broker.is_identical_working_overleaf:
+            self.logger.error("Working branch is not identical to overleaf branch")
+            return ErrorNumber.PUSH_ERROR
         self.logger.info("Successfully pushed changes to Overleaf")
         return ErrorNumber.OK
 
