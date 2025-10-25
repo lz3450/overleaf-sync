@@ -173,11 +173,13 @@ class GitBroker:
         self._update_working_branch_start_commit()
         if "CONFLICT" in result:
             self.logger.error(
-                "Failed to rebase `%s` to `%s`.\n%s\nFix conflicts and run `git rebase --continue`",
+                "Failed to rebase `%s` to `%s`.\n%s\n",
                 self.working_branch,
                 self.overleaf_branch,
                 result,
             )
+            self.logger.error("Resolve conflicts and run `git rebase --continue`")
+            self.logger.error("Then switch back to working branch, apply stash if any")
             return ErrorNumber.GIT_REBASE_CONFLICT_ERROR
         return ErrorNumber.OK
 
@@ -1016,8 +1018,8 @@ class OverleafProject:
         self._pull(dry_run=dry_run)
 
         self.logger.debug("Rebasing working branch after pulling...")
-        if self.git_broker.rebase_working_branch() != ErrorNumber.OK:
-            return ErrorNumber.GIT_REBASE_CONFLICT_ERROR
+        if (return_code := self.git_broker.rebase_working_branch()) != ErrorNumber.OK:
+            return return_code
 
         self.logger.debug("Switching back to working branch without rebasing after pulling...")
         self.git_broker.switch_to_working_branch()
@@ -1135,8 +1137,8 @@ class OverleafProject:
         self.git_broker.tag_working_branch(str(self.git_broker.local_overleaf_version))
 
         self.logger.debug("Rebasing working branch after pushing...")
-        if self.git_broker.rebase_working_branch() != ErrorNumber.OK:
-            return ErrorNumber.GIT_REBASE_CONFLICT_ERROR
+        if (return_code := self.git_broker.rebase_working_branch()) != ErrorNumber.OK:
+            return return_code
 
         self._pull_push_stash_pop(stash)
         ### End push
