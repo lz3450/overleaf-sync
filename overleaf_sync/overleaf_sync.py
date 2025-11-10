@@ -1110,7 +1110,7 @@ class OverleafProject:
             return ErrorNumber.NOT_INITIALIZED_ERROR
 
         if prune:
-            self._push_prune(dry_run)
+            self._push_prune(dry_run=dry_run)
             self._pull_prune(dry_run=dry_run)
             return ErrorNumber.OK
 
@@ -1130,7 +1130,7 @@ class OverleafProject:
         self._push(dry_run=dry_run)
         if not self.new_remote_overleaf_rev_exist:
             self.logger.warning("The new working branch are already identical to the remote overleaf")
-            self.logger.warning("Make more commits before next push")
+            self.logger.warning("It may happen when there are no actual changes to push")
             self._pull_push_stash_pop(stash)
             return ErrorNumber.OK
 
@@ -1138,17 +1138,18 @@ class OverleafProject:
 
         self.git_broker.tag_working_branch(str(self.git_broker.local_overleaf_version))
 
-        self.logger.debug("Rebasing working branch after pushing...")
-        if (return_code := self.git_broker.rebase_working_branch()) != ErrorNumber.OK:
-            return return_code
-
-        self._pull_push_stash_pop(stash)
-        ### End push
-
         # Validation
         if not self.git_broker.is_identical_working_overleaf:
             self.logger.error("Working branch is not identical to overleaf branch")
             return ErrorNumber.PUSH_ERROR
+
+        # Set working branch to overleaf branch
+        assert self.git_broker.current_branch == self.git_broker.overleaf_branch
+        self.git_broker.switch_to_working_branch(force=True)
+
+        self._pull_push_stash_pop(stash)
+        ### End push
+
         self.logger.info("Successfully pushed changes to Overleaf")
         return ErrorNumber.OK
 
