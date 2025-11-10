@@ -36,7 +36,9 @@ PROJECTS_URL = f"{OVERLEAF_URL}/project"
 
 OVERLEAF_SYNC_DIR_NAME = ".overleaf-sync"
 
-LOG_FORMAT = "[%(asctime)s.%(msecs)03d] [%(name)s] [%(funcName)s] [%(levelname)s] %(message)s"
+# LOG_FORMAT = "[%(asctime)s.%(msecs)03d] [%(name)20s] [%(funcName)s] [%(levelname)s] %(message)s"
+# LOG_FORMAT = "[%(asctime)s.%(msecs)03d] [%(name)24s] [%(levelname)6s] %(message)s"
+LOG_FORMAT = "[%(asctime)s.%(msecs)03d] [%(levelname)s] %(message)s"
 LOG_DATEFMT = "%Y-%m-%d %H:%M:%S"
 LOG_DIR = os.path.join(OVERLEAF_SYNC_DIR_NAME, "logs")
 
