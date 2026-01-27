@@ -1138,14 +1138,14 @@ class OverleafProject:
 
         self.git_broker.tag_working_branch(str(self.git_broker.local_overleaf_version))
 
+        # Set working branch to overleaf branch
+        assert self.git_broker.current_branch == self.git_broker.overleaf_branch
+        self.git_broker.switch_to_working_branch(force=True)
+
         # Validation
         if not self.git_broker.is_identical_working_overleaf:
             self.logger.error("Working branch is not identical to overleaf branch")
             return ErrorNumber.PUSH_ERROR
-
-        # Set working branch to overleaf branch
-        assert self.git_broker.current_branch == self.git_broker.overleaf_branch
-        self.git_broker.switch_to_working_branch(force=True)
 
         self._pull_push_stash_pop(stash)
         ### End push
