@@ -661,13 +661,13 @@ class OverleafProject:
         self.config_file = os.path.join(self.overleaf_sync_dir, "config.json")
         self._initialized = False
 
-        if not os.path.exists(self.config_file):
-            return
-
         # Initialize git broker
         self.git_broker = GitBroker(self.working_dir)
         # Initialize overleaf broker
         self.overleaf_broker = OverleafBroker(self.working_dir, self.overleaf_sync_dir)
+
+        if not os.path.exists(self.config_file):
+            return
 
         self.sanity_check()
         self._initialized = True
@@ -1165,8 +1165,6 @@ def setup_logger(logger: logging.Logger, debug: bool, log_file: bool = True) -> 
         return
 
     os.makedirs(LOG_DIR, exist_ok=True)
-    with open(os.path.join(LOG_DIR, ".gitignore"), "w") as f:
-        f.write("*")
     now = datetime.now().strftime("%Y%m%d_%H%M%S")
     fh = logging.FileHandler(os.path.join(LOG_DIR, f"{now}.log"))
     fh.setLevel(logging.DEBUG)
